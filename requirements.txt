@@ -1,5 +1,6 @@
 pytest>=8.0
 python-dotenv>=1.0
 requests>=2.31
+stripe>=13.0
 uagents[all]>=0.22
 uagents-core>=0.3

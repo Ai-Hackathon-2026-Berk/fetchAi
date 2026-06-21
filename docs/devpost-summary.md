@@ -2,7 +2,7 @@
 
 ## One-Liner
 
-AgriBroker is an autonomous produce procurement network where ASI:One turns a buyer request into multi-agent quote discovery, split-order optimization, and FET-based farm payouts.
+AgriBroker is an autonomous produce procurement network where ASI:One turns a buyer request into multi-agent quote discovery, split-order optimization, and simulated Stripe Checkout/Connect payments.
 
 ## Problem
 
@@ -13,7 +13,7 @@ Bulk produce buyers often need to compare multiple suppliers, check available st
 AgriBroker lets a buyer ask:
 
 ```text
-I need 500 tomatoes under 250 FET.
+I need 500 tomatoes under $250.
 ```
 
 The orchestrator agent discovers seller agents, collects tomato quotes, computes the cheapest allocation, funds the order through the orchestrator, pays selected farms, and returns one combined receipt.
@@ -24,7 +24,7 @@ The orchestrator agent discovers seller agents, collects tomato quotes, computes
 - uAgents: orchestrator, registry, and farm agents.
 - Agentverse: mailbox, discovery, and hosted agent profile.
 - Chat Protocol: ASI:One-compatible conversation interface.
-- FET payments: simulated locally, testnet-targeted for farm payouts.
+- Stripe payments: simulated Checkout buyer funding and simulated Connect farm payouts.
 - Flockx Business Agent: Sunny Acres verified seller target or storefront fallback.
 
 ## Why Multi-Agent Matters
@@ -33,10 +33,10 @@ The demo is not one API call. Farm A is cheapest but has limited stock. Farm B h
 
 Expected demo result:
 
-- Farm A: 200 tomatoes = 80 FET
-- Farm B: 300 tomatoes = 135 FET
-- Total: 215 FET
-- Budget remaining: 35 FET
+- Farm A: 200 tomatoes = $80
+- Green Valley: 300 tomatoes = $126
+- Total: $206
+- Budget remaining: $44
 
 ## Future Work
 

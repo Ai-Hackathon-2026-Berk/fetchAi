@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import argparse
 
 from agents.farm_state import FarmState
+from agents.settings import fetch_network
 from agents.protocols import (
     CatalogItem,
     Invoice,
@@ -33,6 +35,7 @@ def create_farmer_agent(state: FarmState, registry_address: str | None = None):
         seed=state.seed,
         port=state.port,
         endpoint=[f"http://127.0.0.1:{state.port}/submit"],
+        network=fetch_network(),
     )
     pending_orders: dict[str, PurchaseOrder] = {}
 
@@ -75,6 +78,7 @@ def create_farmer_agent(state: FarmState, registry_address: str | None = None):
                 order_id=msg.order_id,
                 pay_to_address=state.wallet_address,
                 total_fet=total,
+                stripe_connected_account_id=state.stripe_connected_account_id,
             ),
         )
 
@@ -107,6 +111,10 @@ def load_farm_state(name: str, config_path: Path = Path("config/farms.json")) ->
 
 
 if __name__ == "__main__":  # pragma: no cover
-    farm_state = load_farm_state("Farm A")
-    create_farmer_agent(farm_state).run()
+    parser = argparse.ArgumentParser(description="Run a single AgriBroker farmer agent.")
+    parser.add_argument("--name", default="Farm A", help="Farm name from config/farms.json")
+    parser.add_argument("--registry", default=None, help="Optional registry agent address")
+    args = parser.parse_args()
 
+    farm_state = load_farm_state(args.name)
+    create_farmer_agent(farm_state, registry_address=args.registry).run()

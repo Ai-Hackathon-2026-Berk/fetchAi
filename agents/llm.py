@@ -21,6 +21,17 @@ class BuyerIntent:
     deadline: str | None = None
 
 
+def use_mock_intent_parser(value: str | None = None) -> bool | None:
+    mode = (value or os.getenv("AGRIBROKER_INTENT_MODE") or "local").strip().lower()
+    if mode == "local":
+        return True
+    if mode == "asi":
+        return False
+    if mode == "auto":
+        return None
+    raise ValueError("AGRIBROKER_INTENT_MODE must be 'local', 'asi', or 'auto'")
+
+
 def parse_buyer_intent(text: str, *, use_mock: bool | None = None) -> BuyerIntent:
     """Parse free text into a procurement intent.
 
@@ -94,6 +105,7 @@ def parse_buyer_intent_with_asi_one(text: str) -> BuyerIntent:
     )
     response.raise_for_status()
     content = response.json()["choices"][0]["message"]["content"]
+    content = extract_json_content(content)
     payload: dict[str, Any] = json.loads(content)
     return BuyerIntent(
         item=str(payload["item"]).strip().lower(),
@@ -101,6 +113,15 @@ def parse_buyer_intent_with_asi_one(text: str) -> BuyerIntent:
         budget=None if payload.get("budget") is None else float(payload["budget"]),
         deadline=payload.get("deadline"),
     )
+
+
+def extract_json_content(content: str) -> str:
+    content = content.strip()
+    if content.startswith("```"):
+        content = re.sub(r"^```(?:json)?\s*", "", content, flags=re.I)
+        content = re.sub(r"\s*```$", "", content)
+    match = re.search(r"\{.*\}", content, flags=re.S)
+    return match.group(0) if match else content
 
 
 def parse_natural_language_quote(text: str, default_item: str, seller: str) -> dict[str, Any]:
@@ -114,4 +135,3 @@ def parse_natural_language_quote(text: str, default_item: str, seller: str) -> d
         "qty_available": int(qty_match.group(1)),
         "unit_price": float(price_match.group(1)),
     }
-

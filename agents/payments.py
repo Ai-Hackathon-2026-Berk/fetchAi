@@ -9,10 +9,24 @@ from typing import Any
 from uuid import uuid4
 
 PaymentMode = str
+BuyerPaymentMode = str
 
 SIMULATED_PAYMENT_MODE = "simulated"
 TESTNET_PAYMENT_MODE = "testnet"
-VALID_PAYMENT_MODES = {SIMULATED_PAYMENT_MODE, TESTNET_PAYMENT_MODE}
+STRIPE_CONNECT_FARM_PAYMENT_MODE = "stripe_connect"
+VALID_PAYMENT_MODES = {
+    SIMULATED_PAYMENT_MODE,
+    TESTNET_PAYMENT_MODE,
+    STRIPE_CONNECT_FARM_PAYMENT_MODE,
+}
+STRIPE_BUYER_PAYMENT_MODE = "stripe"
+VALID_BUYER_PAYMENT_MODES = {SIMULATED_PAYMENT_MODE, STRIPE_BUYER_PAYMENT_MODE}
+MICRO_FET = 1_000_000
+
+
+def _stripe_connect_transfers_enabled() -> bool:
+    """Connect transfers are an explicit opt-in so the demo never moves real money by accident."""
+    return os.getenv("STRIPE_CONNECT_TRANSFERS_ENABLED", "").strip().lower() == "true"
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,16 +39,63 @@ class PaymentResult:
     simulated: bool = False
     reason: str | None = None
 
+    @property
+    def explorer_url(self) -> str | None:
+        if self.simulated:
+            return None
+        if self.tx_hash.startswith("tr_"):
+            return None
+        base_url = os.getenv("FETCH_EXPLORER_TX_URL", "https://explore-fetchhub.fetch.ai/transactions")
+        return f"{base_url.rstrip('/')}/{self.tx_hash}"
+
+    @property
+    def receipt_ref(self) -> str:
+        return self.tx_hash if self.explorer_url is None else self.explorer_url
+
+
+@dataclass(frozen=True, slots=True)
+class BuyerFundingResult:
+    order_id: str
+    amount: float
+    currency: str
+    status: str
+    provider: str
+    reference: str
+    checkout_url: str | None = None
+    simulated: bool = False
+    reason: str | None = None
+
+    @property
+    def receipt_ref(self) -> str:
+        if self.checkout_url:
+            return self.checkout_url
+        return self.reference
+
 
 class PaymentError(RuntimeError):
     pass
 
 
 def get_payment_mode(value: str | None = None) -> PaymentMode:
-    mode = (value or os.getenv("AGRIBROKER_PAYMENT_MODE") or SIMULATED_PAYMENT_MODE).strip().lower()
+    mode = (
+        value
+        or os.getenv("AGRIBROKER_FARM_PAYMENT_MODE")
+        or os.getenv("AGRIBROKER_PAYMENT_MODE")
+        or SIMULATED_PAYMENT_MODE
+    ).strip().lower()
     if mode not in VALID_PAYMENT_MODES:
         raise ValueError(
             f"Unsupported payment mode {mode!r}. Use one of: {', '.join(sorted(VALID_PAYMENT_MODES))}"
+        )
+    return mode
+
+
+def get_buyer_payment_mode(value: str | None = None) -> BuyerPaymentMode:
+    mode = (value or os.getenv("AGRIBROKER_BUYER_PAYMENT_MODE") or SIMULATED_PAYMENT_MODE).strip().lower()
+    if mode not in VALID_BUYER_PAYMENT_MODES:
+        raise ValueError(
+            f"Unsupported buyer payment mode {mode!r}. Use one of: "
+            f"{', '.join(sorted(VALID_BUYER_PAYMENT_MODES))}"
         )
     return mode
 
@@ -50,6 +111,237 @@ def simulated_payment(
         recipient=recipient,
         amount_fet=amount_fet,
         tx_hash=f"simulated-{uuid4().hex[:16]}",
+        status="simulated_confirmed",
+        simulated=True,
+        reason=reason,
+    )
+
+
+def simulated_buyer_funding(
+    order_id: str,
+    amount: float,
+    currency: str = "usd",
+    reason: str | None = None,
+) -> BuyerFundingResult:
+    return BuyerFundingResult(
+        order_id=order_id,
+        amount=amount,
+        currency=currency,
+        status="simulated_confirmed",
+        provider="simulated",
+        reference=f"simulated-{uuid4().hex[:16]}",
+        simulated=True,
+        reason=reason,
+    )
+
+
+def simulated_stripe_buyer_funding(
+    order_id: str,
+    amount: float,
+    currency: str = "usd",
+    reason: str | None = None,
+) -> BuyerFundingResult:
+    return BuyerFundingResult(
+        order_id=order_id,
+        amount=amount,
+        currency=currency,
+        status="simulated_checkout_created",
+        provider="stripe",
+        reference=f"cs_simulated_{uuid4().hex[:16]}",
+        simulated=True,
+        reason=reason,
+    )
+
+
+def no_buyer_funding(
+    order_id: str,
+    reason: str,
+    currency: str = "usd",
+) -> BuyerFundingResult:
+    return BuyerFundingResult(
+        order_id=order_id,
+        amount=0.0,
+        currency=currency,
+        status="not_requested",
+        provider="none",
+        reference="not requested",
+        simulated=True,
+        reason=reason,
+    )
+
+
+def create_stripe_checkout_session(
+    *,
+    order_id: str,
+    item: str,
+    qty: int,
+    amount: float,
+    currency: str = "usd",
+) -> BuyerFundingResult:
+    secret_key = os.getenv("STRIPE_SECRET_KEY", "").strip()
+    if not secret_key:
+        return simulated_stripe_buyer_funding(
+            order_id,
+            amount,
+            currency=currency,
+            reason="STRIPE_SECRET_KEY missing; simulated Stripe Checkout",
+        )
+
+    try:
+        import stripe
+
+        stripe.api_key = secret_key
+        success_url = os.getenv("STRIPE_SUCCESS_URL", "https://example.com/agribroker/success")
+        cancel_url = os.getenv("STRIPE_CANCEL_URL", "https://example.com/agribroker/cancel")
+        session = stripe.checkout.Session.create(
+            mode="payment",
+            success_url=success_url,
+            cancel_url=cancel_url,
+            client_reference_id=order_id,
+            metadata={"order_id": order_id, "item": item, "qty": str(qty)},
+            line_items=[
+                {
+                    "price_data": {
+                        "currency": currency,
+                        "unit_amount": dollars_to_cents(amount),
+                        "product_data": {
+                            "name": f"AgriBroker order: {qty} {item}",
+                            "description": "Buyer funding for autonomous produce procurement",
+                        },
+                    },
+                    "quantity": 1,
+                }
+            ],
+        )
+        return BuyerFundingResult(
+            order_id=order_id,
+            amount=amount,
+            currency=currency,
+            status=str(getattr(session, "payment_status", "checkout_created")),
+            provider="stripe",
+            reference=str(session.id),
+            checkout_url=str(session.url),
+            simulated=False,
+        )
+    except Exception as exc:
+        return simulated_stripe_buyer_funding(
+            order_id,
+            amount,
+            currency=currency,
+            reason=f"Stripe Checkout failed; simulated Checkout: {exc}",
+        )
+
+
+def fund_order_from_buyer(
+    *,
+    order_id: str,
+    item: str,
+    qty: int,
+    amount: float,
+    mode: BuyerPaymentMode,
+    currency: str = "usd",
+) -> BuyerFundingResult:
+    if mode == STRIPE_BUYER_PAYMENT_MODE:
+        return create_stripe_checkout_session(
+            order_id=order_id,
+            item=item,
+            qty=qty,
+            amount=amount,
+            currency=currency,
+        )
+    return simulated_buyer_funding(
+        order_id,
+        amount,
+        currency=currency,
+        reason="local demo buyer funding",
+    )
+
+
+def create_stripe_connect_transfer(
+    order_id: str,
+    recipient_account_id: str,
+    amount: float,
+    currency: str = "usd",
+    metadata: dict[str, str] | None = None,
+) -> PaymentResult:
+    """Pay a farm via a Stripe Connect transfer, with a simulated fallback.
+
+    This mirrors the real Connect flow: the buyer funds the platform with Stripe
+    Checkout, then the platform transfers a share to each seller's *connected
+    account* (``acct_...``). It is demo-safe by construction: a real
+    ``stripe.Transfer.create`` only runs when BOTH ``STRIPE_SECRET_KEY`` is set
+    AND ``STRIPE_CONNECT_TRANSFERS_ENABLED=true``. Any other state, or any Stripe
+    error, returns a clearly labeled simulated ``PaymentResult`` so a missing key
+    or flaky API never breaks the live demo.
+
+    ``amount`` is a fiat amount in ``currency`` (USD by default). We reuse
+    ``PaymentResult`` for a uniform settlement type across payout backends; its
+    ``amount_fet`` field carries the transferred amount and ``tx_hash`` carries
+    the Stripe transfer id (``tr_...``).
+    """
+
+    secret_key = os.getenv("STRIPE_SECRET_KEY", "").strip()
+    if not secret_key:
+        return simulated_stripe_transfer(
+            order_id,
+            recipient_account_id,
+            amount,
+            reason="STRIPE_SECRET_KEY missing; simulated Stripe Connect payout",
+        )
+
+    if not _stripe_connect_transfers_enabled():
+        return simulated_stripe_transfer(
+            order_id,
+            recipient_account_id,
+            amount,
+            reason="STRIPE_CONNECT_TRANSFERS_ENABLED is not 'true'; simulated Stripe Connect payout",
+        )
+
+    transfer_metadata: dict[str, str] = {
+        "order_id": order_id,
+        "recipient_account_id": recipient_account_id,
+    }
+    if metadata:
+        transfer_metadata.update({str(key): str(value) for key, value in metadata.items()})
+
+    try:
+        import stripe
+
+        stripe.api_key = secret_key
+        transfer = stripe.Transfer.create(
+            amount=dollars_to_cents(amount),
+            currency=currency,
+            destination=recipient_account_id,
+            metadata=transfer_metadata,
+        )
+        return PaymentResult(
+            order_id=order_id,
+            recipient=recipient_account_id,
+            amount_fet=amount,
+            tx_hash=str(transfer.id),
+            status="real_confirmed",
+            simulated=False,
+        )
+    except Exception as exc:
+        return simulated_stripe_transfer(
+            order_id,
+            recipient_account_id,
+            amount,
+            reason=f"Stripe Connect transfer failed; simulated payout: {exc}",
+        )
+
+
+def simulated_stripe_transfer(
+    order_id: str,
+    recipient_account_id: str,
+    amount: float,
+    reason: str | None = None,
+) -> PaymentResult:
+    return PaymentResult(
+        order_id=order_id,
+        recipient=recipient_account_id,
+        amount_fet=amount,
+        tx_hash=f"tr_simulated_{uuid4().hex[:16]}",
         status="simulated_confirmed",
         simulated=True,
         reason=reason,
@@ -76,18 +368,26 @@ async def send_fet_with_retries(
     """
 
     last_error: Exception | None = None
-    amount_units = int(round(amount_fet * 1_000_000))
+    amount_units = fet_to_micro_fet(amount_fet)
 
     for attempt in range(1, attempts + 1):
         try:
             tx = ledger.send_tokens(recipient, amount_units, denom, wallet)
+            tx_hash = str(getattr(tx, "tx_hash", tx))
             if hasattr(tx, "wait_to_complete"):
                 tx.wait_to_complete()
+            else:  # pragma: no cover - depends on live uAgents network helpers.
+                try:
+                    from uagents.network import wait_for_tx_to_complete
+
+                    await wait_for_tx_to_complete(tx_hash, ledger)
+                except Exception:
+                    pass
             return PaymentResult(
                 order_id=order_id,
                 recipient=recipient,
                 amount_fet=amount_fet,
-                tx_hash=str(tx.tx_hash),
+                tx_hash=tx_hash,
                 status="real_confirmed",
             )
         except Exception as exc:  # pragma: no cover - requires live ledger.
@@ -112,6 +412,22 @@ async def settle_farm_payment(
     wallet: Any | None = None,
     reason: str,
 ) -> PaymentResult:
+    if mode == STRIPE_CONNECT_FARM_PAYMENT_MODE:
+        # Never call Stripe with a Fetch wallet or any other non-Connect destination.
+        if not recipient.startswith("acct_"):
+            return simulated_payment(
+                order_id,
+                recipient,
+                amount_fet,
+                reason="stripe_connect requires a connected account id",
+            )
+        return create_stripe_connect_transfer(
+            order_id,
+            recipient,
+            amount_fet,
+            metadata={"settlement_reason": reason},
+        )
+
     if mode == TESTNET_PAYMENT_MODE and ledger is not None and wallet is not None:
         return await send_fet_with_retries(
             order_id=order_id,
@@ -132,3 +448,44 @@ async def settle_farm_payment(
         amount_fet=amount_fet,
         reason=fallback_reason,
     )
+
+
+def fet_to_micro_fet(amount_fet: float) -> int:
+    if amount_fet < 0:
+        raise ValueError("amount_fet cannot be negative")
+    return int(round(amount_fet * MICRO_FET))
+
+
+def dollars_to_cents(amount: float) -> int:
+    if amount < 0:
+        raise ValueError("amount cannot be negative")
+    return int(round(amount * 100))
+
+
+def micro_fet_to_fet(amount: int) -> float:
+    if amount < 0:
+        raise ValueError("amount cannot be negative")
+    return amount / MICRO_FET
+
+
+def wallet_address(wallet: Any) -> str:
+    address = getattr(wallet, "address", None)
+    if callable(address):
+        return str(address())
+    if address is not None:
+        return str(address)
+    raise PaymentError("Could not determine wallet address")
+
+
+def get_balance_fet(ledger: Any, address: str, denom: str = "atestfet") -> float | None:
+    for method_name in ("query_bank_balance", "query_balance"):
+        method = getattr(ledger, method_name, None)
+        if method is None:
+            continue
+        try:
+            balance = method(address, denom)
+            amount = getattr(balance, "amount", balance)
+            return micro_fet_to_fet(int(amount))
+        except Exception:
+            continue
+    return None

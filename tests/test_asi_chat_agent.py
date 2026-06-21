@@ -1,4 +1,10 @@
-from agents.asi_chat_agent import build_failure_response, extract_text_from_chat_message
+from agents.asi_chat_agent import (
+    agentverse_readme_path,
+    build_failure_response,
+    build_text_chat_message,
+    chat_progress_enabled,
+    extract_text_from_chat_message,
+)
 
 
 class FakeTextContent:
@@ -21,4 +27,27 @@ def test_failure_response_guides_user() -> None:
     response = build_failure_response(ValueError("missing quantity"))
 
     assert "AgriBroker could not complete" in response
-    assert "I need 500 tomatoes under 250 FET" in response
+    assert "I need 500 tomatoes under $250" in response
+
+
+def test_chat_progress_enabled_defaults_to_true(monkeypatch) -> None:
+    monkeypatch.delenv("AGRIBROKER_CHAT_PROGRESS", raising=False)
+
+    assert chat_progress_enabled() is True
+
+
+def test_chat_progress_can_be_disabled(monkeypatch) -> None:
+    monkeypatch.setenv("AGRIBROKER_CHAT_PROGRESS", "false")
+
+    assert chat_progress_enabled() is False
+
+
+def test_build_text_chat_message_can_end_session() -> None:
+    message = build_text_chat_message("Receipt ready.", end_session=True)
+
+    assert message.content[0].text == "Receipt ready."
+    assert message.content[-1].type == "end-session"
+
+
+def test_agentverse_readme_path_exists() -> None:
+    assert agentverse_readme_path() == "docs/agentverse-profile.md"

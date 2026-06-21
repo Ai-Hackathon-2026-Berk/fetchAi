@@ -23,6 +23,7 @@ class FarmState:
     personality: str
     catalog: dict[str, CatalogEntry]
     wallet_address: str
+    stripe_connected_account_id: str | None = None
 
     @classmethod
     def from_config(cls, payload: dict[str, Any]) -> "FarmState":
@@ -42,6 +43,7 @@ class FarmState:
             personality=str(payload["personality"]),
             catalog=catalog,
             wallet_address=simulated_wallet,
+            stripe_connected_account_id=payload.get("stripe_connected_account_id"),
         )
 
     def has_item(self, item: str) -> bool:

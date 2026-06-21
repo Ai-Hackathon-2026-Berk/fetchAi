@@ -92,6 +92,7 @@ class Invoice(Model):
     order_id: str
     pay_to_address: str
     total_fet: float
+    stripe_connected_account_id: str | None = None
 
 
 class BuyerFundingRequest(Model):

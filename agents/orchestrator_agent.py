@@ -7,7 +7,11 @@ current hosted Chat Protocol details are confirmed.
 
 from __future__ import annotations
 
+import os
+
+from agents.agent_network import run_procurement_via_agents
 from agents.protocols import ProcurementRequest, ProcurementResult
+from agents.settings import discovery_mode, fetch_network, registry_address
 from agents.workflow import run_procurement
 
 try:  # pragma: no cover - requires uagents runtime.
@@ -26,6 +30,7 @@ def create_orchestrator_agent(seed: str, port: int = 8200):
         seed=seed,
         port=port,
         endpoint=[f"http://127.0.0.1:{port}/submit"],
+        network=fetch_network(),
     )
 
     @orchestrator.on_event("startup")
@@ -36,11 +41,24 @@ def create_orchestrator_agent(seed: str, port: int = 8200):
     @orchestrator.on_message(model=ProcurementRequest, replies=ProcurementResult)
     async def handle_procurement(ctx: Context, sender: str, msg: ProcurementRequest) -> None:
         try:
-            run = await run_procurement(
-                msg.text,
-                ledger=getattr(ctx, "ledger", None),
-                wallet=orchestrator.wallet,
-            )
+            mode = discovery_mode()
+            address = registry_address()
+            if mode == "agent" and address:
+                run = await run_procurement_via_agents(
+                    ctx=ctx,
+                    registry_address=address,
+                    buyer_text=msg.text,
+                    payment_mode=os.getenv("AGRIBROKER_FARM_PAYMENT_MODE", "simulated"),
+                    intent_mode=os.getenv("AGRIBROKER_INTENT_MODE", "local"),
+                    wallet=orchestrator.wallet,
+                )
+            else:
+                run = await run_procurement(
+                    msg.text,
+                    intent_mode=os.getenv("AGRIBROKER_INTENT_MODE", "local"),
+                    ledger=getattr(ctx, "ledger", None),
+                    wallet=orchestrator.wallet,
+                )
             await ctx.send(
                 sender,
                 ProcurementResult(

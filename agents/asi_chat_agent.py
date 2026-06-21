@@ -6,12 +6,23 @@ import os
 from datetime import datetime, timezone
 from uuid import uuid4
 
+from agents.agent_network import run_procurement_via_agents
+from agents.settings import discovery_mode, registry_address
+from agents.settings import fetch_network
 from agents.workflow import format_procurement_response, run_procurement
 
 try:  # pragma: no cover - optional local convenience.
     from dotenv import load_dotenv
 
     load_dotenv()
+except Exception:  # pragma: no cover
+    pass
+
+try:  # pragma: no cover - environment convenience for local Agentverse SSL.
+    import certifi
+
+    os.environ.setdefault("SSL_CERT_FILE", certifi.where())
+    os.environ.setdefault("REQUESTS_CA_BUNDLE", certifi.where())
 except Exception:  # pragma: no cover
     pass
 
@@ -36,6 +47,22 @@ except Exception:  # pragma: no cover - keeps tests importable without uagents i
 
 
 DEFAULT_SEED = "agribroker-orchestrator-demo-seed-change-before-deploy"
+AGENT_DESCRIPTION = (
+    "Autonomous produce procurement agent that discovers farms, compares quotes, "
+    "optimizes split orders, coordinates buyer funding, and returns receipts."
+)
+AGENT_TAGS = [
+    "procurement",
+    "produce",
+    "marketplace",
+    "payments",
+    "ASI:One",
+    "uAgents",
+]
+PROGRESS_MESSAGES = [
+    "Finding sellers and collecting farm quotes...",
+    "Optimizing the split order and preparing buyer funding...",
+]
 
 
 def utc_now() -> datetime:
@@ -56,8 +83,36 @@ def build_failure_response(error: Exception) -> str:
     return (
         "AgriBroker could not complete this procurement request.\n\n"
         f"Reason: {error}\n\n"
-        "Try a prompt like: I need 500 tomatoes under 250 FET."
+        "Try a prompt like: I need 500 tomatoes under $250."
     )
+
+
+def chat_progress_enabled() -> bool:
+    value = os.getenv("AGRIBROKER_CHAT_PROGRESS", "true").strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
+def agentverse_readme_path() -> str | None:
+    path = "docs/agentverse-profile.md"
+    return path if os.path.exists(path) else None
+
+
+def build_text_chat_message(text: str, *, end_session: bool = False):
+    if ChatMessage is None or TextContent is None or EndSessionContent is None:
+        raise RuntimeError("Chat Protocol types are unavailable")
+
+    content = [TextContent(type="text", text=text)]
+    if end_session:
+        content.append(EndSessionContent(type="end-session"))
+    return ChatMessage(timestamp=utc_now(), msg_id=uuid4(), content=content)
+
+
+async def send_progress_messages(ctx: Context, sender: str) -> None:
+    if not chat_progress_enabled():
+        return
+
+    for text in PROGRESS_MESSAGES:
+        await ctx.send(sender, build_text_chat_message(text))
 
 
 def create_asi_chat_agent(seed: str | None = None, port: int | None = None):
@@ -75,6 +130,15 @@ def create_asi_chat_agent(seed: str | None = None, port: int | None = None):
         port=agent_port,
         mailbox=True,
         publish_agent_details=True,
+        network=fetch_network(),
+        description=AGENT_DESCRIPTION,
+        handle="agribroker",
+        readme_path=agentverse_readme_path(),
+        metadata={
+            "tags": AGENT_TAGS,
+            "category": "procurement",
+            "demo_prompt": "I need 500 tomatoes under $250.",
+        },
     )
     protocol = Protocol(spec=chat_protocol_spec)
 
@@ -92,28 +156,32 @@ def create_asi_chat_agent(seed: str | None = None, port: int | None = None):
 
         text = extract_text_from_chat_message(msg)
         try:
-            run = await run_procurement(
-                text,
-                payment_mode=os.getenv("AGRIBROKER_PAYMENT_MODE", "simulated"),
-                ledger=getattr(ctx, "ledger", None),
-                wallet=agent.wallet,
-            )
+            await send_progress_messages(ctx, sender)
+            mode = discovery_mode()
+            address = registry_address()
+            if mode == "agent" and address:
+                run = await run_procurement_via_agents(
+                    ctx=ctx,
+                    registry_address=address,
+                    buyer_text=text,
+                    payment_mode=os.getenv("AGRIBROKER_FARM_PAYMENT_MODE", "simulated"),
+                    intent_mode=os.getenv("AGRIBROKER_INTENT_MODE", "local"),
+                    wallet=agent.wallet,
+                )
+            else:
+                run = await run_procurement(
+                    text,
+                    payment_mode=os.getenv("AGRIBROKER_FARM_PAYMENT_MODE", "simulated"),
+                    intent_mode=os.getenv("AGRIBROKER_INTENT_MODE", "local"),
+                    ledger=getattr(ctx, "ledger", None),
+                    wallet=agent.wallet,
+                )
             response = format_procurement_response(run)
         except Exception as exc:
             ctx.logger.exception("AgriBroker chat request failed")
             response = build_failure_response(exc)
 
-        await ctx.send(
-            sender,
-            ChatMessage(
-                timestamp=utc_now(),
-                msg_id=uuid4(),
-                content=[
-                    TextContent(type="text", text=response),
-                    EndSessionContent(type="end-session"),
-                ],
-            ),
-        )
+        await ctx.send(sender, build_text_chat_message(response, end_session=True))
 
     @protocol.on_message(ChatAcknowledgement)
     async def handle_chat_ack(_ctx: Context, _sender: str, _msg: ChatAcknowledgement) -> None:

@@ -1,12 +1,13 @@
 {
   "demo_item": "tomatoes",
-  "buyer_prompt": "I need 500 tomatoes under 250 FET.",
+  "buyer_prompt": "I need 500 tomatoes under $250.",
   "farms": [
     {
       "name": "Farm A",
       "seed": "agri-farm-a-demo-seed-change-before-deploy",
       "port": 8101,
       "personality": "efficient low-cost farm with limited harvest available",
+      "stripe_connected_account_id": "acct_demo_farm_a",
       "catalog": {
         "tomatoes": {
           "stock": 200,
@@ -20,6 +21,7 @@
       "seed": "agri-farm-b-demo-seed-change-before-deploy",
       "port": 8102,
       "personality": "reliable mid-size supplier with enough stock for most orders",
+      "stripe_connected_account_id": "acct_demo_farm_b",
       "catalog": {
         "tomatoes": {
           "stock": 400,
@@ -33,6 +35,7 @@
       "seed": "agri-farm-c-demo-seed-change-before-deploy",
       "port": 8103,
       "personality": "premium backup supplier with smaller volume",
+      "stripe_connected_account_id": "acct_demo_farm_c",
       "catalog": {
         "tomatoes": {
           "stock": 100,
@@ -46,6 +49,7 @@
       "seed": "agri-sunny-acres-demo-seed-change-before-deploy",
       "port": 8104,
       "personality": "verified brand storefront represented by Flockx when available",
+      "stripe_connected_account_id": "acct_demo_sunny_acres",
       "catalog": {
         "tomatoes": {
           "stock": 300,
@@ -53,7 +57,20 @@
           "price_floor": 0.44
         }
       }
+    },
+    {
+      "name": "Green Valley",
+      "seed": "agri-green_valley-d8956112-seed",
+      "port": 8105,
+      "personality": "new self-onboarded AgriBroker seller",
+      "stripe_connected_account_id": "acct_demo_green_valley",
+      "catalog": {
+        "tomatoes": {
+          "stock": 300,
+          "base_unit_price": 0.42,
+          "price_floor": 0.38
+        }
+      }
     }
   ]
 }
-
