@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import argparse
 
+from agents.agentverse_profiles import farmer_profile_kwargs
 from agents.farm_state import FarmState
 from agents.settings import fetch_network
 from agents.protocols import (
@@ -34,8 +35,8 @@ def create_farmer_agent(state: FarmState, registry_address: str | None = None):
         name=state.name.lower().replace(" ", "_"),
         seed=state.seed,
         port=state.port,
-        endpoint=[f"http://127.0.0.1:{state.port}/submit"],
         network=fetch_network(),
+        **farmer_profile_kwargs(state),
     )
     pending_orders: dict[str, PurchaseOrder] = {}
 

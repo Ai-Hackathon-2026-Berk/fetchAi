@@ -103,6 +103,12 @@ Run the demo readiness check:
 python scripts/check_demo_ready.py
 ```
 
+Print every Agentverse profile, handle, README, and run command:
+
+```bash
+python scripts/print_agentverse_profiles.py
+```
+
 ## ASI:One And Agentverse
 
 The ASI:One entry point is:
@@ -112,6 +118,8 @@ python -m agents.asi_chat_agent
 ```
 
 This starts a Chat Protocol-compatible uAgent with `mailbox=True` and `publish_agent_details=True`. Keep this process running while testing from ASI:One.
+
+Supporting Registry and Farmer agents also publish Agentverse metadata and README profiles. See [docs/agentverse/setup.md](docs/agentverse/setup.md) for the full profile checklist.
 
 Setup steps:
 
@@ -341,6 +349,18 @@ If anything goes sideways during live judging, switch back to:
 ```bash
 export AGRIBROKER_DISCOVERY_MODE=local
 ```
+
+## Agentverse Profile Files
+
+Agentverse README/profile text lives in:
+
+- `docs/agentverse-profile.md`: buyer-facing AgriBroker chat agent.
+- `docs/agentverse/registry.md`: seller discovery registry.
+- `docs/agentverse/orchestrator.md`: structured procurement orchestrator.
+- `docs/agentverse/farm-a.md`, `farm-b.md`, `farm-c.md`: seeded farm agents.
+- `docs/agentverse/sunny-acres.md`: verified storefront candidate and Business Agent bridge.
+- `docs/agentverse/green-valley.md`: self-onboarded seller.
+- `docs/agentverse/setup.md`: launch and mailbox checklist.
 
 ## Build Roadmap
 

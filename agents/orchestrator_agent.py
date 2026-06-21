@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 
 from agents.agent_network import run_procurement_via_agents
+from agents.agentverse_profiles import orchestrator_profile_kwargs
 from agents.protocols import ProcurementRequest, ProcurementResult
 from agents.settings import discovery_mode, fetch_network, registry_address
 from agents.workflow import run_procurement
@@ -21,7 +22,7 @@ except Exception:  # pragma: no cover
     Context = object  # type: ignore[assignment]
 
 
-def create_orchestrator_agent(seed: str, port: int = 8200):
+def create_orchestrator_agent(seed: str, port: int = 8201):
     if Agent is None:
         raise RuntimeError("uagents is not installed. Install requirements.txt first.")
 
@@ -29,8 +30,8 @@ def create_orchestrator_agent(seed: str, port: int = 8200):
         name="agribroker_orchestrator",
         seed=seed,
         port=port,
-        endpoint=[f"http://127.0.0.1:{port}/submit"],
         network=fetch_network(),
+        **orchestrator_profile_kwargs(),
     )
 
     @orchestrator.on_event("startup")
@@ -77,4 +78,7 @@ def create_orchestrator_agent(seed: str, port: int = 8200):
 
 
 if __name__ == "__main__":  # pragma: no cover
-    create_orchestrator_agent("agribroker-orchestrator-demo-seed-change-before-deploy").run()
+    create_orchestrator_agent(
+        os.getenv("STRUCTURED_ORCHESTRATOR_SEED", "agribroker-orchestrator-demo-seed-change-before-deploy"),
+        port=int(os.getenv("STRUCTURED_ORCHESTRATOR_PORT", "8201")),
+    ).run()

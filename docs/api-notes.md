@@ -43,6 +43,12 @@ This file tracks the external Fetch.ai API details that must be verified before 
 - Confirm Agentverse profile metadata needed for ASI:One discovery.
 - Confirm how a code uAgent can contact a Flockx Business Agent, if supported.
 
+## Business Agent Boundary
+
+- Code uAgents are Python agents built with the uAgents framework. They run the reliable procurement backend: registry, farmers, orchestrator, quote messages, invoices, and receipts.
+- Fetch/Flockx Business Agents are no-code or workbench-created business storefronts. Sunny Acres is the best candidate for this because it can be presented as a verified tomato seller with natural-language catalog behavior.
+- For judging, keep Business Agents out of the critical optimizer path unless direct agent-to-agent access is confirmed. Show Sunny Acres Business Agent as the storefront proof, and keep the code-backed Sunny Acres farm as the live fallback.
+
 ## Useful Docs
 
 - uAgents docs: https://uagents.fetch.ai/docs

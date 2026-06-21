@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from collections import defaultdict
+import os
 
+from agents.agentverse_profiles import registry_profile_kwargs
 from agents.protocols import RegisterCatalog, SellerList, WhoSells
 from agents.settings import fetch_network
 
@@ -22,8 +24,8 @@ def create_registry_agent(seed: str, port: int = 8100):
         name="agribroker_registry",
         seed=seed,
         port=port,
-        endpoint=[f"http://127.0.0.1:{port}/submit"],
         network=fetch_network(),
+        **registry_profile_kwargs(),
     )
     sellers_by_item: dict[str, set[str]] = defaultdict(set)
 
@@ -46,4 +48,7 @@ def create_registry_agent(seed: str, port: int = 8100):
 
 
 if __name__ == "__main__":  # pragma: no cover
-    create_registry_agent("agribroker-registry-demo-seed-change-before-deploy").run()
+    create_registry_agent(
+        os.getenv("REGISTRY_SEED", "agribroker-registry-demo-seed-change-before-deploy"),
+        port=int(os.getenv("REGISTRY_PORT", "8100")),
+    ).run()
