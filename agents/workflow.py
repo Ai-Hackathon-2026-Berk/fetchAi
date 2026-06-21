@@ -249,6 +249,137 @@ async def run_procurement(
     )
 
 
+async def run_business_procurement(
+    buyer_text: str,
+    *,
+    business_quote: Quote,
+    payment_mode: str | None = None,
+    intent_mode: str | None = None,
+    buyer_funding_override: BuyerFundingResult | None = None,
+) -> ProcurementRun:
+    order_id = buyer_funding_override.order_id if buyer_funding_override else f"order-{uuid4().hex[:8]}"
+    mode = get_payment_mode(payment_mode)
+    buyer_mode = get_buyer_payment_mode()
+    intent = parse_buyer_intent(
+        buyer_text,
+        use_mock=use_mock_intent_parser(intent_mode),
+    )
+    quote = Quote(
+        seller=business_quote.seller,
+        item=business_quote.item,
+        qty_available=business_quote.qty_available,
+        unit_price=business_quote.unit_price,
+    )
+    transcript = [
+        f"Buyer intent parsed: {intent.qty} {intent.item}"
+        + (f" under {intent.budget:.2f}." if intent.budget is not None else "."),
+        f"Business Agent quote from {quote.seller}: {quote.qty_available} @ {quote.unit_price:.2f}.",
+    ]
+
+    split = optimize_split([quote], qty_needed=intent.qty, budget=intent.budget)
+    plan_text = " + ".join(
+        f"{allocation.qty} from {allocation.seller}" for allocation in split.allocations
+    )
+    transcript.append(f"Business-only split: {plan_text} = {split.total_cost:.2f}.")
+
+    if split.shortfall or split.over_budget:
+        reason = "order shortfall" if split.shortfall else "order exceeds buyer budget"
+        buyer_funding = no_buyer_funding(order_id=order_id, reason=reason)
+        if split.shortfall:
+            transcript.append(f"Shortfall: {split.shortfall} {intent.item}. No payment executed.")
+        else:
+            transcript.append(
+                f"Plan exceeds budget by {split.total_cost - (intent.budget or 0):.2f}. "
+                "No payment executed."
+            )
+        return ProcurementRun(
+            order_id=order_id,
+            intent=intent,
+            quotes=(quote,),
+            split=split,
+            buyer_funding=buyer_funding,
+            settlements=(),
+            transcript=tuple(transcript),
+            payment_mode=mode,
+            buyer_payment_mode=buyer_mode,
+        )
+
+    buyer_funding = buyer_funding_override or fund_order_from_buyer(
+        order_id=order_id,
+        item=intent.item,
+        qty=intent.qty,
+        amount=split.total_cost,
+        mode=buyer_mode,
+    )
+    transcript.append(
+        f"Buyer funding: {buyer_funding.provider} {buyer_funding.status} "
+        f"({buyer_funding.receipt_ref})."
+    )
+
+    if _is_checkout_pending(buyer_funding):
+        save_pending_order(
+            PendingOrder(
+                order_id=order_id,
+                buyer_text=buyer_text,
+                checkout_session_id=buyer_funding.reference,
+                amount=buyer_funding.amount,
+                currency=buyer_funding.currency,
+                mode="business",
+                seller=quote.seller,
+                item=quote.item,
+                qty_available=quote.qty_available,
+                unit_price=quote.unit_price,
+            )
+        )
+        transcript.append("Checkout is pending. Business Agent order confirmation will run after Stripe confirms payment.")
+        return ProcurementRun(
+            order_id=order_id,
+            intent=intent,
+            quotes=(quote,),
+            split=split,
+            buyer_funding=buyer_funding,
+            settlements=(),
+            transcript=tuple(transcript),
+            payment_mode=mode,
+            buyer_payment_mode=buyer_mode,
+        )
+
+    settlements = tuple(
+        FarmSettlement(
+            allocation=allocation,
+            payment=PaymentResult(
+                order_id=order_id,
+                recipient=quote.seller,
+                amount_fet=allocation.total_cost,
+                tx_hash=f"business-confirmed-{uuid4().hex[:10]}",
+                status="business_agent_confirmed",
+                simulated=True,
+                reason="Business Agent order confirmation",
+            ),
+            receipt_message=(
+                f"{quote.seller} Business Agent confirmed {allocation.qty} "
+                f"{allocation.item} for preparation."
+            ),
+        )
+        for allocation in split.allocations
+    )
+    transcript.append(
+        f"Done: {intent.qty} {intent.item} sourced from {quote.seller} Business Agent "
+        f"for {split.total_cost:.2f}."
+    )
+    return ProcurementRun(
+        order_id=order_id,
+        intent=intent,
+        quotes=(quote,),
+        split=split,
+        buyer_funding=buyer_funding,
+        settlements=settlements,
+        transcript=tuple(transcript),
+        payment_mode=mode,
+        buyer_payment_mode=buyer_mode,
+    )
+
+
 async def confirm_pending_order(
     order_id: str | None = None,
     *,
@@ -292,6 +423,21 @@ async def confirm_pending_order(
         )
 
     delete_pending_order(pending.order_id)
+    if pending.mode == "business":
+        if not pending.seller or not pending.item or pending.qty_available is None or pending.unit_price is None:
+            raise ValueError("Pending Business Agent order is missing quote details")
+        return await run_business_procurement(
+            pending.buyer_text,
+            business_quote=Quote(
+                seller=pending.seller,
+                item=pending.item,
+                qty_available=pending.qty_available,
+                unit_price=pending.unit_price,
+            ),
+            payment_mode=payment_mode,
+            intent_mode=intent_mode,
+            buyer_funding_override=funding,
+        )
     return await run_procurement(
         pending.buyer_text,
         farms=farms,
@@ -490,7 +636,11 @@ def _format_agent_trace_lines(run: ProcurementRun) -> list[str]:
             line.startswith("Registry returned")
             or line.startswith("Sent QuoteRequest")
             or line.startswith("Sent PurchaseOrder")
+            or line.startswith("Business Agent quote")
+            or line.startswith("Business-only split")
+            or line.startswith("Business Agent live reply timed out")
             or "through live agent messages" in line
+            or "Business Agent" in line and line.startswith("Done:")
         )
     ]
     if not trace:
@@ -574,6 +724,8 @@ def farm_payment_recipient(farm: FarmState, payment_mode: str) -> str:
 
 
 def _format_farm_payout_mode(run: ProcurementRun) -> str:
+    if any(settlement.payment.status == "business_agent_confirmed" for settlement in run.settlements):
+        return "Business Agent confirmation"
     has_real_payment = any(not settlement.payment.simulated for settlement in run.settlements)
     if run.payment_mode == STRIPE_CONNECT_FARM_PAYMENT_MODE:
         return "Stripe Connect" if has_real_payment else "Stripe Connect (simulated/local demo)"

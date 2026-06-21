@@ -3,7 +3,7 @@ import asyncio
 from agents.optimizer import Quote
 from agents.payments import BuyerFundingResult
 from agents.workflow import format_procurement_response, load_farms, run_procurement_locally
-from agents.workflow import run_procurement
+from agents.workflow import run_business_procurement, run_procurement
 
 
 def test_local_procurement_demo_flow(monkeypatch) -> None:
@@ -138,6 +138,47 @@ def test_business_quote_quantity_clamped_to_stock(monkeypatch) -> None:
     )
     sunny = next(q for q in run.quotes if q.seller == "Sunny Acres")
     assert sunny.qty_available <= 300  # clamped to real stock, fulfillment is safe
+
+
+def test_business_only_procurement_uses_only_business_agent(monkeypatch) -> None:
+    monkeypatch.delenv("AGRIBROKER_BUYER_PAYMENT_MODE", raising=False)
+    quote = Quote(seller="Sunny Acres", item="tomatoes", qty_available=300, unit_price=0.48)
+
+    run = asyncio.run(
+        run_business_procurement(
+            "I need 250 tomatoes under $150.",
+            business_quote=quote,
+            payment_mode="stripe_connect",
+            intent_mode="local",
+        )
+    )
+    response = format_procurement_response(run)
+
+    assert run.status == "confirmed"
+    assert [q.seller for q in run.quotes] == ["Sunny Acres"]
+    assert run.split.total_cost == 120.0
+    assert run.settlements[0].payment.status == "business_agent_confirmed"
+    assert "- Farm payout mode: Business Agent confirmation" in response
+    assert "Agent trace:" in response
+    assert "Business Agent quote from Sunny Acres" in response
+
+
+def test_business_only_shortfall_does_not_pay(monkeypatch) -> None:
+    monkeypatch.delenv("AGRIBROKER_BUYER_PAYMENT_MODE", raising=False)
+    quote = Quote(seller="Sunny Acres", item="tomatoes", qty_available=300, unit_price=0.48)
+
+    run = asyncio.run(
+        run_business_procurement(
+            "I need 500 tomatoes under $300.",
+            business_quote=quote,
+            payment_mode="stripe_connect",
+            intent_mode="local",
+        )
+    )
+
+    assert run.status == "partial"
+    assert run.split.shortfall == 200
+    assert run.settlements == ()
 
 
 def test_real_checkout_link_defers_farm_payouts(monkeypatch, tmp_path) -> None:

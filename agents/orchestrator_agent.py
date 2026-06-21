@@ -16,10 +16,11 @@ from agents.settings import discovery_mode, fetch_network, registry_address
 from agents.workflow import run_procurement
 
 try:  # pragma: no cover - requires uagents runtime.
-    from uagents import Agent, Context
+    from uagents import Agent, Context, Protocol
 except Exception:  # pragma: no cover
     Agent = None  # type: ignore[assignment]
     Context = object  # type: ignore[assignment]
+    Protocol = None  # type: ignore[assignment]
 
 
 def create_orchestrator_agent(seed: str, port: int = 8201):
@@ -33,13 +34,14 @@ def create_orchestrator_agent(seed: str, port: int = 8201):
         network=fetch_network(),
         **orchestrator_profile_kwargs(),
     )
+    procurement_protocol = Protocol(name="AgriBrokerProcurementProtocol", version="1.0")
 
     @orchestrator.on_event("startup")
     async def startup(ctx: Context) -> None:
         ctx.logger.info(f"AgriBroker orchestrator address: {ctx.agent.address}")
         ctx.logger.info(f"AgriBroker orchestrator wallet: {orchestrator.wallet.address()}")
 
-    @orchestrator.on_message(model=ProcurementRequest, replies=ProcurementResult)
+    @procurement_protocol.on_message(model=ProcurementRequest, replies=ProcurementResult)
     async def handle_procurement(ctx: Context, sender: str, msg: ProcurementRequest) -> None:
         try:
             mode = discovery_mode()
@@ -74,6 +76,7 @@ def create_orchestrator_agent(seed: str, port: int = 8201):
                 ProcurementResult(status="failed", summary=str(exc), total_fet=0.0),
             )
 
+    orchestrator.include(procurement_protocol, publish_manifest=True)
     return orchestrator
 
 

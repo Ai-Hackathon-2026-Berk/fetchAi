@@ -6,7 +6,7 @@ import os
 from typing import Literal
 
 FetchNetwork = Literal["mainnet", "testnet"]
-DiscoveryMode = Literal["local", "agent"]
+DiscoveryMode = Literal["local", "agent", "business"]
 
 
 def fetch_network() -> FetchNetwork:
@@ -18,8 +18,8 @@ def fetch_network() -> FetchNetwork:
 
 def discovery_mode(value: str | None = None) -> DiscoveryMode:
     mode = (value or os.getenv("AGRIBROKER_DISCOVERY_MODE") or "local").strip().lower()
-    if mode not in {"local", "agent"}:
-        raise ValueError("AGRIBROKER_DISCOVERY_MODE must be 'local' or 'agent'")
+    if mode not in {"local", "agent", "business"}:
+        raise ValueError("AGRIBROKER_DISCOVERY_MODE must be 'local', 'agent', or 'business'")
     return mode  # type: ignore[return-value]
 
 

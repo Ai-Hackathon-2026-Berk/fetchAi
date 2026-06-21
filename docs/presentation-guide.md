@@ -14,7 +14,7 @@ AgriBroker turns "I need 500 tomatoes under $250" into live agent discovery, opt
 
 ## Slide 1: Title
 
-**AgriBroker**
+**AgriBroker**a
 
 Autonomous produce procurement for ASI:One, Agentverse, and farm seller agents.
 

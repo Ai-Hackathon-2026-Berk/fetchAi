@@ -11,6 +11,8 @@ from uuid import uuid4
 from agents.agent_network import confirm_pending_order_via_agents, run_procurement_via_agents
 from agents.business_seller import (
     build_quote_request_text,
+    business_fallback_enabled,
+    business_live_quote_enabled,
     business_seller_address,
     business_seller_enabled,
     clear_pending_reply,
@@ -20,6 +22,7 @@ from agents.business_seller import (
     resolve_pending_reply,
 )
 from agents.farm_state import FarmState
+from agents.agentverse_profiles import image_kwargs
 from agents.llm import parse_buyer_intent, use_mock_intent_parser
 from agents.settings import discovery_mode, registry_address
 from agents.settings import fetch_network
@@ -29,6 +32,7 @@ from agents.workflow import (
     format_procurement_response,
     load_farms,
     run_procurement,
+    run_business_procurement,
 )
 
 try:  # pragma: no cover - optional local convenience.
@@ -139,8 +143,20 @@ def reset_live_farms() -> None:
     _LIVE_FARMS = None
 
 
+def fallback_business_quote(text: str):
+    intent = parse_buyer_intent(
+        text,
+        use_mock=use_mock_intent_parser(os.getenv("AGRIBROKER_INTENT_MODE", "local")),
+    )
+    seller_name = os.getenv("AGRIBROKER_BUSINESS_SELLER_NAME", "Sunny Acres").strip() or "Sunny Acres"
+    farm = next((farm for farm in load_farms() if farm.name == seller_name and farm.has_item(intent.item)), None)
+    if farm is None:
+        return None
+    return farm.quote(intent.item, intent.qty)
+
+
 def chat_progress_enabled() -> bool:
-    value = os.getenv("AGRIBROKER_CHAT_PROGRESS", "true").strip().lower()
+    value = os.getenv("AGRIBROKER_CHAT_PROGRESS", "false").strip().lower()
     return value in {"1", "true", "yes", "on"}
 
 
@@ -253,7 +269,7 @@ async def fetch_business_quote(ctx: Context, *, qty: int, item: str):  # pragma:
 async def maybe_fetch_business_quote(ctx: Context, sender: str, text: str):  # pragma: no cover - live runtime
     """Best-effort live Business Agent quote with user-visible progress + fallback."""
 
-    if not business_seller_enabled():
+    if not business_seller_enabled() or not business_live_quote_enabled():
         return None
     try:
         intent = parse_buyer_intent(
@@ -298,6 +314,7 @@ def create_asi_chat_agent(seed: str | None = None, port: int | None = None):
         description=AGENT_DESCRIPTION,
         handle="agribroker",
         readme_path=agentverse_readme_path(),
+        **image_kwargs("chat", seed="agribroker-chat"),
         metadata={
             "tags": AGENT_TAGS,
             "category": "procurement",
@@ -366,7 +383,42 @@ def create_asi_chat_agent(seed: str | None = None, port: int | None = None):
             business_quote = await maybe_fetch_business_quote(ctx, sender, text)
             mode = discovery_mode()
             address = registry_address()
-            if mode == "agent" and address:
+            if mode == "business":
+                used_business_fallback = False
+                if business_quote is None:
+                    if not business_fallback_enabled():
+                        raise ValueError(
+                            "Business-only mode requires a live Sunny Acres Business Agent quote. "
+                            "Set AGRIBROKER_BUSINESS_SELLER_ADDRESS and make sure Sunny Acres replies."
+                        )
+                    business_quote = fallback_business_quote(text)
+                    if business_quote is None:
+                        raise ValueError(
+                            "Business-only fallback could not find the Sunny Acres catalog quote."
+                        )
+                    used_business_fallback = True
+                run = await run_business_procurement(
+                    text,
+                    business_quote=business_quote,
+                    payment_mode=os.getenv("AGRIBROKER_FARM_PAYMENT_MODE", "simulated"),
+                    intent_mode=os.getenv("AGRIBROKER_INTENT_MODE", "local"),
+                )
+                if used_business_fallback:
+                    run = ProcurementRun(
+                        order_id=run.order_id,
+                        intent=run.intent,
+                        quotes=run.quotes,
+                        split=run.split,
+                        buyer_funding=run.buyer_funding,
+                        settlements=run.settlements,
+                        transcript=(
+                            *run.transcript,
+                            "Business Agent live reply timed out; used Sunny Acres configured Business catalog fallback.",
+                        ),
+                        payment_mode=run.payment_mode,
+                        buyer_payment_mode=run.buyer_payment_mode,
+                    )
+            elif mode == "agent" and address:
                 run = await run_procurement_via_agents(
                     ctx=ctx,
                     registry_address=address,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import os
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,9 @@ from agents.farm_state import FarmState
 
 AGENTVERSE_DOCS_DIR = Path("docs/agentverse")
 COMMON_TAGS = ["AgriBroker", "produce", "marketplace", "procurement", "Stripe", "ASI:One"]
+DEFAULT_BANNER_URL = (
+    "https://api.dicebear.com/9.x/shapes/svg?seed=agribroker-marketplace&backgroundColor=e8f5e9"
+)
 
 
 def slugify(value: str) -> str:
@@ -22,6 +26,25 @@ def slugify(value: str) -> str:
 def readme_path(filename: str) -> str | None:
     path = AGENTVERSE_DOCS_DIR / filename
     return str(path) if path.exists() else None
+
+
+def image_kwargs(role: str, *, seed: str | None = None) -> dict[str, str]:
+    role_key = re.sub(r"[^A-Z0-9]+", "_", role.upper()).strip("_")
+    avatar = (
+        os.getenv(f"AGRIBROKER_{role_key}_AVATAR_URL")
+        or os.getenv("AGRIBROKER_AGENT_AVATAR_URL")
+        or default_avatar_url(seed or role)
+    ).strip()
+    banner = (
+        os.getenv(f"AGRIBROKER_{role_key}_BANNER_URL")
+        or os.getenv("AGRIBROKER_AGENT_BANNER_URL")
+        or DEFAULT_BANNER_URL
+    ).strip()
+    return {"avatar_url": avatar, "banner_url": banner}
+
+
+def default_avatar_url(seed: str) -> str:
+    return f"https://api.dicebear.com/9.x/icons/svg?seed={slugify(seed)}"
 
 
 def registry_profile_kwargs() -> dict[str, Any]:
@@ -39,6 +62,7 @@ def registry_profile_kwargs() -> dict[str, Any]:
         },
         "mailbox": True,
         "publish_agent_details": True,
+        **image_kwargs("registry", seed="agribroker-registry"),
     }
 
 
@@ -57,6 +81,7 @@ def orchestrator_profile_kwargs() -> dict[str, Any]:
         },
         "mailbox": True,
         "publish_agent_details": True,
+        **image_kwargs("orchestrator", seed="agribroker-orchestrator"),
     }
 
 
@@ -83,4 +108,5 @@ def farmer_profile_kwargs(state: FarmState) -> dict[str, Any]:
         },
         "mailbox": True,
         "publish_agent_details": True,
+        **image_kwargs("farmer", seed=state.name),
     }

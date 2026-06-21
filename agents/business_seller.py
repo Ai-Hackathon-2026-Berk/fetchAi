@@ -65,6 +65,16 @@ def business_seller_enabled() -> bool:
     return business_seller_address() is not None
 
 
+def business_live_quote_enabled() -> bool:
+    value = os.getenv("AGRIBROKER_BUSINESS_LIVE_QUOTE", "false").strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
+def business_fallback_enabled() -> bool:
+    value = os.getenv("AGRIBROKER_BUSINESS_ALLOW_FALLBACK", "true").strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
 def build_quote_request_text(qty: int, item: str) -> str:
     return (
         f"How much for {qty} {item}? "

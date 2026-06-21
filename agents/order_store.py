@@ -18,6 +18,11 @@ class PendingOrder:
     checkout_session_id: str
     amount: float
     currency: str
+    mode: str = "standard"
+    seller: str | None = None
+    item: str | None = None
+    qty_available: int | None = None
+    unit_price: float | None = None
 
 
 def save_pending_order(order: PendingOrder, path: Path = DEFAULT_ORDER_STORE) -> None:
@@ -28,6 +33,11 @@ def save_pending_order(order: PendingOrder, path: Path = DEFAULT_ORDER_STORE) ->
         "checkout_session_id": order.checkout_session_id,
         "amount": order.amount,
         "currency": order.currency,
+        "mode": order.mode,
+        "seller": order.seller,
+        "item": order.item,
+        "qty_available": order.qty_available,
+        "unit_price": order.unit_price,
     }
     path.write_text(json.dumps(payload, indent=2) + "\n")
 
@@ -42,6 +52,11 @@ def load_pending_order(order_id: str, path: Path = DEFAULT_ORDER_STORE) -> Pendi
         checkout_session_id=str(raw["checkout_session_id"]),
         amount=float(raw["amount"]),
         currency=str(raw["currency"]),
+        mode=str(raw.get("mode", "standard")),
+        seller=str(raw["seller"]) if raw.get("seller") is not None else None,
+        item=str(raw["item"]) if raw.get("item") is not None else None,
+        qty_available=int(raw["qty_available"]) if raw.get("qty_available") is not None else None,
+        unit_price=float(raw["unit_price"]) if raw.get("unit_price") is not None else None,
     )
 
 

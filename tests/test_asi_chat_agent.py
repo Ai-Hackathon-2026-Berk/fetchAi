@@ -8,6 +8,7 @@ from agents.asi_chat_agent import (
     chat_progress_enabled,
     extract_confirmation_order_id,
     extract_text_from_chat_message,
+    fallback_business_quote,
     send_progress_messages,
 )
 
@@ -58,8 +59,14 @@ def test_failure_response_guides_user() -> None:
     assert "I need 500 tomatoes under $250" in response
 
 
-def test_chat_progress_enabled_defaults_to_true(monkeypatch) -> None:
+def test_chat_progress_enabled_defaults_to_false(monkeypatch) -> None:
     monkeypatch.delenv("AGRIBROKER_CHAT_PROGRESS", raising=False)
+
+    assert chat_progress_enabled() is False
+
+
+def test_chat_progress_can_be_enabled(monkeypatch) -> None:
+    monkeypatch.setenv("AGRIBROKER_CHAT_PROGRESS", "true")
 
     assert chat_progress_enabled() is True
 
@@ -126,3 +133,14 @@ def test_build_reasoning_messages_shortfall_and_over_budget() -> None:
 def test_build_reasoning_messages_payment_pending() -> None:
     run = _fake_run(status="payment_pending", settlements=[])
     assert any("Stripe Checkout" in m for m in build_reasoning_messages(run))
+
+
+def test_fallback_business_quote_uses_sunny_acres_catalog(monkeypatch) -> None:
+    monkeypatch.setenv("AGRIBROKER_BUSINESS_SELLER_NAME", "Sunny Acres")
+
+    quote = fallback_business_quote("I need 500 tomatoes under $250.")
+
+    assert quote is not None
+    assert quote.seller == "Sunny Acres"
+    assert quote.qty_available == 300
+    assert quote.unit_price == 0.48

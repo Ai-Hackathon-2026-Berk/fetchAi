@@ -21,24 +21,34 @@ from agents.protocols import (
 )
 
 try:  # pragma: no cover - requires uagents runtime.
-    from uagents import Agent, Context
+    from uagents import Agent, Context, Protocol
 except Exception:  # pragma: no cover
     Agent = None  # type: ignore[assignment]
     Context = object  # type: ignore[assignment]
+    Protocol = None  # type: ignore[assignment]
 
 
-def create_farmer_agent(state: FarmState, registry_address: str | None = None):
+def create_farmer_agent(
+    state: FarmState,
+    registry_address: str | None = None,
+    *,
+    local_only: bool = False,
+):
     if Agent is None:
         raise RuntimeError("uagents is not installed. Install requirements.txt first.")
 
+    # local_only skips the Agentverse mailbox/profile so the agent talks purely over
+    # local endpoints (used by the live bureau demo to avoid Agentverse rate limits).
+    profile = {} if local_only else farmer_profile_kwargs(state)
     farmer = Agent(
         name=state.name.lower().replace(" ", "_"),
         seed=state.seed,
         port=state.port,
         network=fetch_network(),
-        **farmer_profile_kwargs(state),
+        **profile,
     )
     pending_orders: dict[str, PurchaseOrder] = {}
+    farm_protocol = Protocol(name="AgriBrokerFarmProtocol", version="1.0")
 
     @farmer.on_event("startup")
     async def startup(ctx: Context) -> None:
@@ -52,7 +62,7 @@ def create_farmer_agent(state: FarmState, registry_address: str | None = None):
             ]
             await ctx.send(registry_address, RegisterCatalog(address=ctx.agent.address, items=items))
 
-    @farmer.on_message(model=QuoteRequest, replies=QuoteResponse)
+    @farm_protocol.on_message(model=QuoteRequest, replies=QuoteResponse)
     async def quote(ctx: Context, sender: str, msg: QuoteRequest) -> None:
         try:
             response = state.quote(msg.item, msg.qty)
@@ -74,7 +84,7 @@ def create_farmer_agent(state: FarmState, registry_address: str | None = None):
         except Exception as exc:
             ctx.logger.warning(f"{state.name} could not quote {msg.item}: {exc}")
 
-    @farmer.on_message(model=PurchaseOrder, replies=Invoice)
+    @farm_protocol.on_message(model=PurchaseOrder, replies=Invoice)
     async def invoice(ctx: Context, sender: str, msg: PurchaseOrder) -> None:
         total = state.invoice_total(msg.item, msg.qty, msg.agreed_unit_price)
         pending_orders[msg.order_id] = msg
@@ -92,7 +102,7 @@ def create_farmer_agent(state: FarmState, registry_address: str | None = None):
             ),
         )
 
-    @farmer.on_message(model=PaymentSent, replies=Receipt)
+    @farm_protocol.on_message(model=PaymentSent, replies=Receipt)
     async def confirm_payment(ctx: Context, sender: str, msg: PaymentSent) -> None:
         order = pending_orders.get(msg.order_id)
         if order is None:
@@ -113,6 +123,7 @@ def create_farmer_agent(state: FarmState, registry_address: str | None = None):
             ),
         )
 
+    farmer.include(farm_protocol, publish_manifest=True)
     return farmer
 
 
