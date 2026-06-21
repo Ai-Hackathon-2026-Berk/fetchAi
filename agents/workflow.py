@@ -76,6 +76,7 @@ def run_procurement_locally(
     intent_mode: str | None = None,
     ledger: Any | None = None,
     wallet: Any | None = None,
+    business_quote: Quote | None = None,
 ) -> ProcurementRun:
     import asyncio
 
@@ -87,6 +88,7 @@ def run_procurement_locally(
             intent_mode=intent_mode,
             ledger=ledger,
             wallet=wallet,
+            business_quote=business_quote,
         )
     )
 
@@ -100,6 +102,7 @@ async def run_procurement(
     ledger: Any | None = None,
     wallet: Any | None = None,
     buyer_funding_override: BuyerFundingResult | None = None,
+    business_quote: Quote | None = None,
 ) -> ProcurementRun:
     order_id = buyer_funding_override.order_id if buyer_funding_override else f"order-{uuid4().hex[:8]}"
     mode = get_payment_mode(payment_mode)
@@ -117,7 +120,15 @@ async def run_procurement(
     sellers = [farm for farm in farms if farm.has_item(intent.item)]
     transcript.append(f"Found {len(sellers)} sellers for {intent.item}.")
 
-    quotes = tuple(farm.quote(intent.item, intent.qty) for farm in sellers)
+    quote_list = [farm.quote(intent.item, intent.qty) for farm in sellers]
+    if business_quote is not None:
+        quote_list, applied = _overlay_business_quote(quote_list, business_quote, sellers, intent.item)
+        if applied is not None:
+            transcript.append(
+                f"Live Business Agent quote from {applied.seller}: "
+                f"{applied.qty_available} @ {applied.unit_price:.2f}."
+            )
+    quotes = tuple(quote_list)
     quote_text = ", ".join(
         f"{quote.seller}: {quote.qty_available} @ {quote.unit_price:.2f}"
         for quote in quotes
@@ -492,6 +503,39 @@ def _uses_stripe_flow(run: ProcurementRun) -> bool:
         run.buyer_payment_mode == STRIPE_BUYER_PAYMENT_MODE
         or run.payment_mode == STRIPE_CONNECT_FARM_PAYMENT_MODE
     )
+
+
+def _overlay_business_quote(
+    quotes: list[Quote],
+    business_quote: Quote,
+    sellers: list[FarmState],
+    item: str,
+) -> tuple[list[Quote], Quote | None]:
+    """Replace a matching seller's quote with a live Business Agent quote.
+
+    Only applies when the live quote's seller already exists as a farm (so settlement
+    stays valid), and clamps the live quantity to that farm's real stock so fulfillment
+    can never exceed inventory. Returns the (possibly unchanged) quotes plus the applied
+    quote (or None if it was not applied).
+    """
+
+    farm = next((f for f in sellers if f.name == business_quote.seller), None)
+    if farm is None or item not in farm.catalog:
+        return quotes, None
+
+    stock = farm.catalog[item].stock
+    qty_available = max(0, min(business_quote.qty_available, stock))
+    if qty_available <= 0 or business_quote.unit_price <= 0:
+        return quotes, None
+
+    applied = Quote(
+        seller=farm.name,
+        item=item,
+        qty_available=qty_available,
+        unit_price=business_quote.unit_price,
+    )
+    updated = [applied if quote.seller == farm.name else quote for quote in quotes]
+    return updated, applied
 
 
 def _is_checkout_pending(funding: BuyerFundingResult) -> bool:

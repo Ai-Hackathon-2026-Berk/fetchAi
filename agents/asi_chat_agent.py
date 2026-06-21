@@ -2,13 +2,25 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 from datetime import datetime, timezone
 from uuid import uuid4
 
 from agents.agent_network import confirm_pending_order_via_agents, run_procurement_via_agents
+from agents.business_seller import (
+    build_quote_request_text,
+    business_seller_address,
+    business_seller_enabled,
+    clear_pending_reply,
+    is_awaiting_reply,
+    quote_from_reply,
+    register_pending_reply,
+    resolve_pending_reply,
+)
 from agents.farm_state import FarmState
+from agents.llm import parse_buyer_intent, use_mock_intent_parser
 from agents.settings import discovery_mode, registry_address
 from agents.settings import fetch_network
 from agents.workflow import (
@@ -69,7 +81,15 @@ AGENT_TAGS = [
 ]
 PROGRESS_INTRO = "\U0001f50e On it — discovering farms and collecting live quotes…"
 PROGRESS_CONFIRM = "\U0001f504 Confirming your Stripe payment and releasing farm payouts…"
+BUSINESS_PROGRESS = "\U0001f4ac Asking Sunny Acres (verified Business Agent) for a live quote…"
 _LIVE_FARMS: list[FarmState] | None = None
+
+
+def business_quote_timeout() -> float:
+    try:
+        return float(os.getenv("AGRIBROKER_BUSINESS_QUOTE_TIMEOUT", "40"))
+    except ValueError:
+        return 40.0
 
 
 def utc_now() -> datetime:
@@ -199,6 +219,66 @@ async def send_reasoning_messages(ctx: Context, sender: str, run: ProcurementRun
         await ctx.send(sender, build_text_chat_message(text))
 
 
+async def fetch_business_quote(ctx: Context, *, qty: int, item: str):  # pragma: no cover - live runtime
+    """Ask the Sunny Acres Business Agent for a live quote over the Chat Protocol.
+
+    Chat replies are asynchronous: we send the request, then wait on a per-sender
+    future that ``handle_chat_message`` resolves when the Business Agent answers.
+    Returns a parsed ``Quote`` or None on timeout/parse-failure, so the caller falls
+    back to the seeded Sunny Acres catalog price. The demo never blocks on this.
+    """
+
+    address = business_seller_address()
+    if not address:
+        return None
+
+    future = register_pending_reply(address)
+    try:
+        await ctx.send(address, build_text_chat_message(build_quote_request_text(qty, item)))
+        ctx.logger.info(f"Sent live quote request to Business Agent {address}")
+        reply_text = await asyncio.wait_for(future, timeout=business_quote_timeout())
+        ctx.logger.info(f"Business Agent replied: {reply_text[:160]!r}")
+    except asyncio.TimeoutError:
+        ctx.logger.warning("Business Agent did not reply within timeout; using fallback price.")
+        return None
+    except Exception as exc:
+        ctx.logger.warning(f"Business Agent quote request failed ({exc}); using fallback price.")
+        return None
+    finally:
+        clear_pending_reply(address)
+
+    return quote_from_reply(reply_text, qty=qty, item=item)
+
+
+async def maybe_fetch_business_quote(ctx: Context, sender: str, text: str):  # pragma: no cover - live runtime
+    """Best-effort live Business Agent quote with user-visible progress + fallback."""
+
+    if not business_seller_enabled():
+        return None
+    try:
+        intent = parse_buyer_intent(
+            text, use_mock=use_mock_intent_parser(os.getenv("AGRIBROKER_INTENT_MODE", "local"))
+        )
+    except Exception:
+        return None
+
+    await send_intro_message(ctx, sender, BUSINESS_PROGRESS)
+    quote = await fetch_business_quote(ctx, qty=intent.qty, item=intent.item)
+    if quote is not None:
+        await send_intro_message(
+            ctx,
+            sender,
+            f"✅ Sunny Acres replied live: {quote.qty_available} @ {quote.unit_price:.2f}.",
+        )
+    else:
+        await send_intro_message(
+            ctx,
+            sender,
+            "ℹ️ Sunny Acres Business Agent didn't quote in time — using its catalog price.",
+        )
+    return quote
+
+
 def create_asi_chat_agent(seed: str | None = None, port: int | None = None):
     if Agent is None or Protocol is None:
         raise RuntimeError(
@@ -239,6 +319,14 @@ def create_asi_chat_agent(seed: str | None = None, port: int | None = None):
         )
 
         text = extract_text_from_chat_message(msg)
+
+        # A message from the Business Agent is its reply to our live quote request,
+        # not a buyer request — hand it to the waiting future and stop.
+        business_address = business_seller_address()
+        if business_address and sender == business_address:
+            resolve_pending_reply(business_address, text)
+            return
+
         try:
             confirm_order_id = extract_confirmation_order_id(text)
             if confirm_order_id is not None:
@@ -274,6 +362,8 @@ def create_asi_chat_agent(seed: str | None = None, port: int | None = None):
                 return
 
             await send_intro_message(ctx, sender, PROGRESS_INTRO)
+            # Live Business Agent quote runs in BOTH discovery modes.
+            business_quote = await maybe_fetch_business_quote(ctx, sender, text)
             mode = discovery_mode()
             address = registry_address()
             if mode == "agent" and address:
@@ -284,6 +374,7 @@ def create_asi_chat_agent(seed: str | None = None, port: int | None = None):
                     payment_mode=os.getenv("AGRIBROKER_FARM_PAYMENT_MODE", "simulated"),
                     intent_mode=os.getenv("AGRIBROKER_INTENT_MODE", "local"),
                     wallet=agent.wallet,
+                    business_quote=business_quote,
                 )
             else:
                 run = await run_procurement(
@@ -293,6 +384,7 @@ def create_asi_chat_agent(seed: str | None = None, port: int | None = None):
                     intent_mode=os.getenv("AGRIBROKER_INTENT_MODE", "local"),
                     ledger=getattr(ctx, "ledger", None),
                     wallet=agent.wallet,
+                    business_quote=business_quote,
                 )
             await send_reasoning_messages(ctx, sender, run)
             response = format_procurement_response(run)

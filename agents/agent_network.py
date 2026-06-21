@@ -47,6 +47,36 @@ class AgentWorkflowError(RuntimeError):
     pass
 
 
+def _overlay_live_quote(
+    quotes: tuple[Quote, ...],
+    business_quote: Quote,
+) -> tuple[tuple[Quote, ...], Quote | None]:
+    """Replace a responding farmer's quote with the live Business Agent price.
+
+    Only applies when a farmer with the same name already quoted (so the structured
+    PurchaseOrder/Invoice/Payment settlement stays valid), and clamps the live quantity
+    to what that farmer said it can supply. Returns the (possibly unchanged) quotes plus
+    the applied quote, or None if it was not applied.
+    """
+
+    match = next((quote for quote in quotes if quote.seller == business_quote.seller), None)
+    if match is None:
+        return quotes, None
+
+    qty_available = max(0, min(business_quote.qty_available, match.qty_available))
+    if qty_available <= 0 or business_quote.unit_price <= 0:
+        return quotes, None
+
+    applied = Quote(
+        seller=match.seller,
+        item=match.item,
+        qty_available=qty_available,
+        unit_price=business_quote.unit_price,
+    )
+    updated = tuple(applied if quote.seller == match.seller else quote for quote in quotes)
+    return updated, applied
+
+
 async def run_procurement_via_agents(
     *,
     ctx: Any,
@@ -57,6 +87,7 @@ async def run_procurement_via_agents(
     wallet: Any | None = None,
     timeout: int = 15,
     buyer_funding_override: BuyerFundingResult | None = None,
+    business_quote: Quote | None = None,
 ) -> ProcurementRun:
     order_id = buyer_funding_override.order_id if buyer_funding_override else f"order-{uuid4().hex[:8]}"
     request_id = f"quote-{uuid4().hex[:8]}"
@@ -108,6 +139,14 @@ async def run_procurement_via_agents(
     )
     if not quotes:
         raise AgentWorkflowError("No sellers returned usable quotes")
+
+    if business_quote is not None:
+        quotes, applied = _overlay_live_quote(quotes, business_quote)
+        if applied is not None:
+            transcript.append(
+                f"Live Business Agent quote from {applied.seller}: "
+                f"{applied.qty_available} @ {applied.unit_price:.2f}."
+            )
 
     quote_text = ", ".join(
         f"{quote.seller}: {quote.qty_available} @ {quote.unit_price:.2f} FET"

@@ -53,4 +53,6 @@ Judges should chat with the main AgriBroker ASI agent. The Registry and Farmer a
 
 ## Business Agent Boundary
 
-Sunny Acres is the best candidate for a Fetch Business Agent. For demo reliability, keep the code-backed Sunny Acres farm in the optimizer and show the Business Agent as the verified storefront representation.
+Sunny Acres is built as a real Fetch.ai Business Agent (no-code, via Flockx) and shown as the
+verified storefront, while the code-backed Sunny Acres farm stays in the optimizer for demo
+reliability. See [sunny-acres.md](sunny-acres.md) for the step-by-step build + showcase guide.

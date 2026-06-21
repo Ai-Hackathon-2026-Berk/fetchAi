@@ -1,5 +1,6 @@
 import asyncio
 
+from agents.optimizer import Quote
 from agents.payments import BuyerFundingResult
 from agents.workflow import format_procurement_response, load_farms, run_procurement_locally
 from agents.workflow import run_procurement
@@ -94,6 +95,49 @@ def test_farms_load_stripe_connected_account_ids() -> None:
     farms = load_farms()
 
     assert farms[0].stripe_connected_account_id == "acct_demo_farm_a"
+
+
+def test_business_quote_overlays_sunny_acres_and_wins(monkeypatch) -> None:
+    monkeypatch.delenv("AGRIBROKER_BUYER_PAYMENT_MODE", raising=False)
+    # Sunny Acres' Business Agent undercuts everyone at 0.30/unit for 300 units.
+    live = Quote(seller="Sunny Acres", item="tomatoes", qty_available=300, unit_price=0.30)
+    run = run_procurement_locally(
+        "I need 500 tomatoes under 250 FET.",
+        payment_mode="simulated",
+        business_quote=live,
+    )
+
+    # The live quote should be used and Sunny Acres should win an allocation.
+    sunny = next(q for q in run.quotes if q.seller == "Sunny Acres")
+    assert sunny.unit_price == 0.30
+    sellers = [s.allocation.seller for s in run.settlements]
+    assert "Sunny Acres" in sellers
+    assert run.status == "confirmed"
+
+
+def test_business_quote_for_unknown_seller_is_ignored(monkeypatch) -> None:
+    monkeypatch.delenv("AGRIBROKER_BUYER_PAYMENT_MODE", raising=False)
+    bogus = Quote(seller="Nonexistent Farm", item="tomatoes", qty_available=999, unit_price=0.01)
+    run = run_procurement_locally(
+        "I need 500 tomatoes under 250 FET.",
+        payment_mode="simulated",
+        business_quote=bogus,
+    )
+    # Unknown seller must not enter the quote set (settlement safety).
+    assert all(q.seller != "Nonexistent Farm" for q in run.quotes)
+
+
+def test_business_quote_quantity_clamped_to_stock(monkeypatch) -> None:
+    monkeypatch.delenv("AGRIBROKER_BUYER_PAYMENT_MODE", raising=False)
+    # Claims more stock than Sunny Acres actually has (config stock is 300).
+    greedy = Quote(seller="Sunny Acres", item="tomatoes", qty_available=99999, unit_price=0.10)
+    run = run_procurement_locally(
+        "I need 500 tomatoes under 250 FET.",
+        payment_mode="simulated",
+        business_quote=greedy,
+    )
+    sunny = next(q for q in run.quotes if q.seller == "Sunny Acres")
+    assert sunny.qty_available <= 300  # clamped to real stock, fulfillment is safe
 
 
 def test_real_checkout_link_defers_farm_payouts(monkeypatch, tmp_path) -> None:

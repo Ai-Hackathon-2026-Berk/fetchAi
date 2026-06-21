@@ -102,6 +102,48 @@ def test_agent_network_procurement_happy_path() -> None:
     assert any(isinstance(message, PaymentSent) for _destination, message in ctx.sent)
 
 
+def test_agent_network_overlays_business_quote_on_responding_farmer() -> None:
+    from agents.optimizer import Quote
+
+    ctx = FakeContext()
+    # Business Agent undercuts Farm A's network quote (0.40 -> 0.25).
+    live = Quote(seller="Farm A", item="tomatoes", qty_available=200, unit_price=0.25)
+    run = asyncio.run(
+        run_procurement_via_agents(
+            ctx=ctx,
+            registry_address="agent-registry",
+            buyer_text="I need 500 tomatoes under 250 FET.",
+            payment_mode="simulated",
+            intent_mode="local",
+            wallet=object(),
+            business_quote=live,
+        )
+    )
+
+    farm_a = next(q for q in run.quotes if q.seller == "Farm A")
+    assert farm_a.unit_price == 0.25  # live price overlaid onto the responding farmer
+
+
+def test_agent_network_ignores_business_quote_for_absent_seller() -> None:
+    from agents.optimizer import Quote
+
+    ctx = FakeContext()
+    bogus = Quote(seller="Ghost Farm", item="tomatoes", qty_available=999, unit_price=0.01)
+    run = asyncio.run(
+        run_procurement_via_agents(
+            ctx=ctx,
+            registry_address="agent-registry",
+            buyer_text="I need 500 tomatoes under 250 FET.",
+            payment_mode="simulated",
+            intent_mode="local",
+            wallet=object(),
+            business_quote=bogus,
+        )
+    )
+
+    assert all(q.seller != "Ghost Farm" for q in run.quotes)
+
+
 def test_agent_network_stripe_connect_uses_invoice_connected_accounts(monkeypatch) -> None:
     monkeypatch.delenv("STRIPE_SECRET_KEY", raising=False)
     ctx = FakeContext()
