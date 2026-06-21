@@ -3,13 +3,21 @@
 from __future__ import annotations
 
 import os
+import re
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from agents.agent_network import run_procurement_via_agents
+from agents.agent_network import confirm_pending_order_via_agents, run_procurement_via_agents
+from agents.farm_state import FarmState
 from agents.settings import discovery_mode, registry_address
 from agents.settings import fetch_network
-from agents.workflow import format_procurement_response, run_procurement
+from agents.workflow import (
+    ProcurementRun,
+    confirm_pending_order,
+    format_procurement_response,
+    load_farms,
+    run_procurement,
+)
 
 try:  # pragma: no cover - optional local convenience.
     from dotenv import load_dotenv
@@ -59,10 +67,9 @@ AGENT_TAGS = [
     "ASI:One",
     "uAgents",
 ]
-PROGRESS_MESSAGES = [
-    "Finding sellers and collecting farm quotes...",
-    "Optimizing the split order and preparing buyer funding...",
-]
+PROGRESS_INTRO = "\U0001f50e On it — discovering farms and collecting live quotes…"
+PROGRESS_CONFIRM = "\U0001f504 Confirming your Stripe payment and releasing farm payouts…"
+_LIVE_FARMS: list[FarmState] | None = None
 
 
 def utc_now() -> datetime:
@@ -87,6 +94,31 @@ def build_failure_response(error: Exception) -> str:
     )
 
 
+def extract_confirmation_order_id(text: str) -> str | None:
+    match = re.search(
+        r"\b(?:confirm|confrim)(?:\s+order)?(?:\s+(order-[a-f0-9]{8}))?\b",
+        text,
+        re.I,
+    )
+    if match:
+        return match.group(1) or ""
+    if re.search(r"\b(i paid|payment complete|checkout complete|confirm payment)\b", text, re.I):
+        return ""
+    return None
+
+
+def live_farms() -> list[FarmState]:
+    global _LIVE_FARMS
+    if _LIVE_FARMS is None:
+        _LIVE_FARMS = load_farms()
+    return _LIVE_FARMS
+
+
+def reset_live_farms() -> None:
+    global _LIVE_FARMS
+    _LIVE_FARMS = None
+
+
 def chat_progress_enabled() -> bool:
     value = os.getenv("AGRIBROKER_CHAT_PROGRESS", "true").strip().lower()
     return value in {"1", "true", "yes", "on"}
@@ -107,11 +139,63 @@ def build_text_chat_message(text: str, *, end_session: bool = False):
     return ChatMessage(timestamp=utc_now(), msg_id=uuid4(), content=content)
 
 
-async def send_progress_messages(ctx: Context, sender: str) -> None:
+def build_reasoning_messages(run: ProcurementRun) -> list[str]:
+    """Turn a completed run into the orchestrator's step-by-step 'thinking' lines.
+
+    These stream into the ASI:One chat before the final receipt so judges watch the
+    agent discover sellers, compare quotes, and optimize the split with real numbers.
+    """
+
+    item = run.intent.item
+    messages = [f"\U0001f50e Found {len(run.quotes)} seller(s) offering {item}."]
+
+    if run.quotes:
+        quote_summary = " · ".join(
+            f"{quote.seller} {quote.qty_available}@{quote.unit_price:.2f}"
+            for quote in run.quotes
+        )
+        messages.append(f"\U0001f4ac Quotes: {quote_summary}")
+
+    if run.split.allocations:
+        plan = " + ".join(
+            f"{allocation.qty}×{allocation.seller}" for allocation in run.split.allocations
+        )
+        messages.append(f"\U0001f9ee Optimal split: {plan}")
+
+    status = run.status
+    if status == "partial":
+        messages.append(
+            f"⚠️ Only {run.split.allocated_qty} of {run.intent.qty} {item} "
+            f"available — short {run.split.shortfall}. No payment sent."
+        )
+    elif status == "over_budget":
+        messages.append("⚠️ Cheapest plan exceeds your budget — no payment sent.")
+    elif status == "payment_pending":
+        messages.append(
+            "\U0001f4b3 Buyer funding via Stripe Checkout — confirm payment to release farm payouts."
+        )
+    elif run.settlements:
+        messages.append(f"\U0001f4b8 Settling {len(run.settlements)} farm payout(s)…")
+
+    return messages
+
+
+async def send_intro_message(ctx: Context, sender: str, text: str) -> None:
     if not chat_progress_enabled():
         return
+    await ctx.send(sender, build_text_chat_message(text))
 
-    for text in PROGRESS_MESSAGES:
+
+async def send_progress_messages(ctx: Context, sender: str) -> None:
+    """Backward-compatible wrapper for older chat handler paths."""
+
+    await send_intro_message(ctx, sender, PROGRESS_INTRO)
+
+
+async def send_reasoning_messages(ctx: Context, sender: str, run: ProcurementRun) -> None:
+    if not chat_progress_enabled():
+        return
+    for text in build_reasoning_messages(run):
         await ctx.send(sender, build_text_chat_message(text))
 
 
@@ -156,7 +240,40 @@ def create_asi_chat_agent(seed: str | None = None, port: int | None = None):
 
         text = extract_text_from_chat_message(msg)
         try:
-            await send_progress_messages(ctx, sender)
+            confirm_order_id = extract_confirmation_order_id(text)
+            if confirm_order_id is not None:
+                await send_intro_message(ctx, sender, PROGRESS_CONFIRM)
+                mode = discovery_mode()
+                address = registry_address()
+                if mode == "agent" and address:
+                    run = await confirm_pending_order_via_agents(
+                        ctx=ctx,
+                        registry_address=address,
+                        order_id=confirm_order_id or None,
+                        payment_mode=os.getenv("AGRIBROKER_FARM_PAYMENT_MODE", "simulated"),
+                        intent_mode=os.getenv("AGRIBROKER_INTENT_MODE", "local"),
+                        wallet=agent.wallet,
+                    )
+                else:
+                    run = await confirm_pending_order(
+                        confirm_order_id or None,
+                        farms=live_farms(),
+                        payment_mode=os.getenv("AGRIBROKER_FARM_PAYMENT_MODE", "simulated"),
+                        intent_mode=os.getenv("AGRIBROKER_INTENT_MODE", "local"),
+                        ledger=getattr(ctx, "ledger", None),
+                        wallet=agent.wallet,
+                    )
+                if run is None:
+                    response = (
+                        "I could not find a pending Stripe Checkout order to confirm.\n\n"
+                        "Start a new request with: I need 500 tomatoes under $250."
+                    )
+                else:
+                    response = format_procurement_response(run)
+                await ctx.send(sender, build_text_chat_message(response, end_session=True))
+                return
+
+            await send_intro_message(ctx, sender, PROGRESS_INTRO)
             mode = discovery_mode()
             address = registry_address()
             if mode == "agent" and address:
@@ -171,11 +288,13 @@ def create_asi_chat_agent(seed: str | None = None, port: int | None = None):
             else:
                 run = await run_procurement(
                     text,
+                    farms=live_farms(),
                     payment_mode=os.getenv("AGRIBROKER_FARM_PAYMENT_MODE", "simulated"),
                     intent_mode=os.getenv("AGRIBROKER_INTENT_MODE", "local"),
                     ledger=getattr(ctx, "ledger", None),
                     wallet=agent.wallet,
                 )
+            await send_reasoning_messages(ctx, sender, run)
             response = format_procurement_response(run)
         except Exception as exc:
             ctx.logger.exception("AgriBroker chat request failed")

@@ -1,4 +1,8 @@
+import asyncio
+
+from agents.payments import BuyerFundingResult
 from agents.workflow import format_procurement_response, load_farms, run_procurement_locally
+from agents.workflow import run_procurement
 
 
 def test_local_procurement_demo_flow(monkeypatch) -> None:
@@ -78,9 +82,143 @@ def test_stripe_connect_procurement_uses_farm_connected_accounts(monkeypatch) ->
     assert "- Buyer payment: Stripe Checkout (simulated)" in response
     assert "- Buyer funding: cs_simulated_" in response
     assert "- Farm payout mode: Stripe Connect (simulated/local demo)" in response
+    assert "Stripe steps:" in response
+    assert "- Checkout Session simulated: cs_simulated_" in response
+    assert "- Connect transfer simulated: tr_simulated_" in response
+    assert "to Farm A Stripe account for $80.00" in response
+    assert "to Green Valley Stripe account for $126.00" in response
+    assert "Order confirmed. Your 500 tomatoes order has been placed" in response
 
 
 def test_farms_load_stripe_connected_account_ids() -> None:
     farms = load_farms()
 
     assert farms[0].stripe_connected_account_id == "acct_demo_farm_a"
+
+
+def test_real_checkout_link_defers_farm_payouts(monkeypatch, tmp_path) -> None:
+    farms = load_farms()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("AGRIBROKER_BUYER_PAYMENT_MODE", "stripe")
+    funding = BuyerFundingResult(
+        order_id="order-test",
+        amount=206.0,
+        currency="usd",
+        status="unpaid",
+        provider="stripe",
+        reference="cs_test_demo",
+        checkout_url="https://checkout.stripe.test/session",
+        simulated=False,
+    )
+
+    run = asyncio.run(
+        run_procurement(
+            "I need 500 tomatoes under $250.",
+            farms=farms,
+            payment_mode="stripe_connect",
+            intent_mode="local",
+            buyer_funding_override=funding,
+        )
+    )
+    response = format_procurement_response(run)
+
+    assert run.status == "payment_pending"
+    assert run.settlements == ()
+    assert "- Status: payment_pending" in response
+    assert "[Open Stripe Checkout](https://checkout.stripe.test/session)" in response
+    assert "Farm payouts: waiting for Stripe payment confirmation" in response
+    assert "Order confirmed." not in response
+    assert "confirm order" in response
+
+
+def test_paid_stripe_confirmation_returns_final_receipt(monkeypatch, tmp_path) -> None:
+    farms = load_farms()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("AGRIBROKER_BUYER_PAYMENT_MODE", "stripe")
+    monkeypatch.setenv("STRIPE_CONNECT_TRANSFERS_ENABLED", "false")
+    funding = BuyerFundingResult(
+        order_id="order-paid",
+        amount=206.0,
+        currency="usd",
+        status="paid",
+        provider="stripe",
+        reference="cs_test_paid_123456789",
+        checkout_url=None,
+        simulated=False,
+    )
+
+    run = asyncio.run(
+        run_procurement(
+            "I need 500 tomatoes under $250.",
+            farms=farms,
+            payment_mode="stripe_connect",
+            intent_mode="local",
+            buyer_funding_override=funding,
+        )
+    )
+    response = format_procurement_response(run)
+
+    assert run.status == "confirmed"
+    assert response.startswith("Payment confirmed for order order-paid.")
+    assert "Final receipt:" in response
+    assert "Quotes:" not in response
+    assert "Optimal split:" not in response
+    assert "- Buyer payment: Stripe Checkout paid (cs_test_paid_1...456789)" in response
+    assert "- Checkout Session confirmed: Stripe Checkout paid (cs_test_paid_1...456789)" in response
+    assert "[Open Stripe Checkout]" not in response
+    assert "None" not in response
+    assert "Order confirmed. Your 500 tomatoes order has been placed" in response
+
+
+def test_quotes_show_available_inventory_and_stable_prices(monkeypatch) -> None:
+    monkeypatch.delenv("AGRIBROKER_BUYER_PAYMENT_MODE", raising=False)
+    monkeypatch.delenv("AGRIBROKER_DYNAMIC_PRICING", raising=False)
+
+    run = run_procurement_locally("I need 100 tomatoes under $150.", payment_mode="simulated")
+    response = format_procurement_response(run)
+
+    assert "- Farm A: 200 @ 0.40 FET" in response
+    assert "- Farm B: 400 @ 0.45 FET" in response
+    assert "- Green Valley: 300 @ 0.42 FET" in response
+
+
+def test_shared_farm_state_depletes_inventory_after_confirmed_order(monkeypatch, tmp_path) -> None:
+    farms = load_farms()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("AGRIBROKER_BUYER_PAYMENT_MODE", "stripe")
+    monkeypatch.setenv("STRIPE_CONNECT_TRANSFERS_ENABLED", "false")
+    funding = BuyerFundingResult(
+        order_id="order-paid",
+        amount=206.0,
+        currency="usd",
+        status="paid",
+        provider="stripe",
+        reference="cs_test_paid_123456789",
+        checkout_url=None,
+        simulated=False,
+    )
+
+    first_run = asyncio.run(
+        run_procurement(
+            "I need 500 tomatoes under $250.",
+            farms=farms,
+            payment_mode="stripe_connect",
+            intent_mode="local",
+            buyer_funding_override=funding,
+        )
+    )
+    second_run = asyncio.run(
+        run_procurement(
+            "I need 400 tomatoes under $150.",
+            farms=farms,
+            payment_mode="stripe_connect",
+            intent_mode="local",
+        )
+    )
+    response = format_procurement_response(second_run)
+
+    assert first_run.status == "confirmed"
+    assert {quote.seller for quote in second_run.quotes} == {"Farm B", "Farm C", "Sunny Acres"}
+    assert "- Farm A:" not in response
+    assert "- Green Valley:" not in response
+    assert "- Farm B: 400 @ $0.45" in response

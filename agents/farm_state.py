@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -47,7 +48,8 @@ class FarmState:
         )
 
     def has_item(self, item: str) -> bool:
-        return normalize_item(item) in self.catalog
+        item_key = normalize_item(item)
+        return item_key in self.catalog and self.catalog[item_key].stock > 0
 
     def quote(self, item: str, requested_qty: int) -> Quote:
         item_key = normalize_item(item)
@@ -60,13 +62,15 @@ class FarmState:
         return Quote(
             seller=self.name,
             item=item_key,
-            qty_available=min(requested_qty, entry.stock),
+            qty_available=entry.stock,
             unit_price=self.current_unit_price(item_key, requested_qty),
         )
 
     def current_unit_price(self, item: str, requested_qty: int) -> float:
         entry = self.catalog[normalize_item(item)]
         price = entry.base_unit_price
+        if not dynamic_pricing_enabled():
+            return round(max(price, entry.price_floor), 4)
 
         if entry.stock < 100:
             price *= 1.08
@@ -92,3 +96,7 @@ class FarmState:
 
 def normalize_item(item: str) -> str:
     return item.strip().lower()
+
+
+def dynamic_pricing_enabled() -> bool:
+    return os.getenv("AGRIBROKER_DYNAMIC_PRICING", "").strip().lower() in {"1", "true", "yes", "on"}

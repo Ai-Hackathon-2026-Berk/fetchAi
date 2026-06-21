@@ -24,6 +24,7 @@ seeds.txt
 
 # Logs
 *.log
+.agribroker_pending_orders.json
 
 # Test/cache output
 .pytest_cache/

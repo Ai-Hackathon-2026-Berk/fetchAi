@@ -6,7 +6,7 @@
       "name": "Farm A",
       "seed": "agri-farm-a-demo-seed-change-before-deploy",
       "port": 8101,
-      "personality": "efficient low-cost farm with limited harvest available",
+      "personality": "Lean low-cost grower. Prices aggressively to move small harvests fast, but sells out quickly.",
       "stripe_connected_account_id": "acct_demo_farm_a",
       "catalog": {
         "tomatoes": {
@@ -20,7 +20,7 @@
       "name": "Farm B",
       "seed": "agri-farm-b-demo-seed-change-before-deploy",
       "port": 8102,
-      "personality": "reliable mid-size supplier with enough stock for most orders",
+      "personality": "Dependable mid-size supplier. Deep, steady stock that fills the bulk of most orders at a fair price.",
       "stripe_connected_account_id": "acct_demo_farm_b",
       "catalog": {
         "tomatoes": {
@@ -34,7 +34,7 @@
       "name": "Farm C",
       "seed": "agri-farm-c-demo-seed-change-before-deploy",
       "port": 8103,
-      "personality": "premium backup supplier with smaller volume",
+      "personality": "Premium small-batch farm. Top-quality produce at higher prices and limited volume.",
       "stripe_connected_account_id": "acct_demo_farm_c",
       "catalog": {
         "tomatoes": {
@@ -48,7 +48,7 @@
       "name": "Sunny Acres",
       "seed": "agri-sunny-acres-demo-seed-change-before-deploy",
       "port": 8104,
-      "personality": "verified brand storefront represented by Flockx when available",
+      "personality": "Verified brand storefront, represented by a Flockx Business Agent. A trusted name at mid-tier pricing.",
       "stripe_connected_account_id": "acct_demo_sunny_acres",
       "catalog": {
         "tomatoes": {
@@ -62,7 +62,7 @@
       "name": "Green Valley",
       "seed": "agri-green_valley-d8956112-seed",
       "port": 8105,
-      "personality": "new self-onboarded AgriBroker seller",
+      "personality": "Up-and-coming self-onboarded grower. Undercuts on price to win its first orders on the network.",
       "stripe_connected_account_id": "acct_demo_green_valley",
       "catalog": {
         "tomatoes": {

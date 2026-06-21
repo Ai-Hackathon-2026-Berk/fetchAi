@@ -11,13 +11,23 @@ from typing import Any
 from uuid import uuid4
 
 from agents.llm import BuyerIntent, parse_buyer_intent, use_mock_intent_parser
-from agents.optimizer import Quote, optimize_split
+from agents.optimizer import Quote, SplitResult, optimize_split
+from agents.order_store import (
+    PendingOrder,
+    delete_pending_order,
+    latest_pending_order,
+    load_pending_order,
+    save_pending_order,
+)
 from agents.payments import (
+    BuyerFundingResult,
+    STRIPE_BUYER_PAYMENT_MODE,
     STRIPE_CONNECT_FARM_PAYMENT_MODE,
     fund_order_from_buyer,
     get_buyer_payment_mode,
     get_payment_mode,
     no_buyer_funding,
+    retrieve_stripe_checkout_session,
     settle_farm_payment,
 )
 from agents.protocols import (
@@ -46,8 +56,9 @@ async def run_procurement_via_agents(
     intent_mode: str | None = None,
     wallet: Any | None = None,
     timeout: int = 15,
+    buyer_funding_override: BuyerFundingResult | None = None,
 ) -> ProcurementRun:
-    order_id = f"order-{uuid4().hex[:8]}"
+    order_id = buyer_funding_override.order_id if buyer_funding_override else f"order-{uuid4().hex[:8]}"
     request_id = f"quote-{uuid4().hex[:8]}"
     mode = get_payment_mode(payment_mode)
     buyer_mode = get_buyer_payment_mode()
@@ -74,6 +85,7 @@ async def run_procurement_via_agents(
 
     quote_responses: list[tuple[str, QuoteResponse]] = []
     for address in seller_addresses:
+        transcript.append(f"Sent QuoteRequest to farm agent {address}.")
         response, _status = await ctx.send_and_receive(
             address,
             QuoteRequest(item=intent.item, qty=intent.qty, request_id=request_id),
@@ -134,7 +146,7 @@ async def run_procurement_via_agents(
             buyer_payment_mode=buyer_mode,
         )
 
-    buyer_funding = fund_order_from_buyer(
+    buyer_funding = buyer_funding_override or fund_order_from_buyer(
         order_id=order_id,
         item=intent.item,
         qty=intent.qty,
@@ -146,10 +158,34 @@ async def run_procurement_via_agents(
         f"({buyer_funding.receipt_ref})."
     )
 
+    if _is_checkout_pending(buyer_funding):
+        save_pending_order(
+            PendingOrder(
+                order_id=order_id,
+                buyer_text=buyer_text,
+                checkout_session_id=buyer_funding.reference,
+                amount=buyer_funding.amount,
+                currency=buyer_funding.currency,
+            )
+        )
+        transcript.append("Checkout is pending. Live farm purchase orders will run after Stripe confirms payment.")
+        return ProcurementRun(
+            order_id=order_id,
+            intent=intent,
+            quotes=quotes,
+            split=split,
+            buyer_funding=buyer_funding,
+            settlements=(),
+            transcript=tuple(transcript),
+            payment_mode=mode,
+            buyer_payment_mode=buyer_mode,
+        )
+
     address_by_farmer = {response.farmer: address for address, response in quote_responses}
     settlements: list[FarmSettlement] = []
     for allocation in split.allocations:
         address = address_by_farmer[allocation.seller]
+        transcript.append(f"Sent PurchaseOrder to {allocation.seller} agent at {address}.")
         invoice_msg, _status = await ctx.send_and_receive(
             address,
             PurchaseOrder(
@@ -213,4 +249,72 @@ async def run_procurement_via_agents(
         transcript=tuple(transcript),
         payment_mode=mode,
         buyer_payment_mode=buyer_mode,
+    )
+
+
+async def confirm_pending_order_via_agents(
+    *,
+    ctx: Any,
+    registry_address: str,
+    order_id: str | None = None,
+    payment_mode: str | None = None,
+    intent_mode: str | None = None,
+    wallet: Any | None = None,
+    timeout: int = 15,
+) -> ProcurementRun | None:
+    pending = load_pending_order(order_id) if order_id else latest_pending_order()
+    if pending is None:
+        return None
+
+    funding = retrieve_stripe_checkout_session(
+        session_id=pending.checkout_session_id,
+        order_id=pending.order_id,
+        amount=pending.amount,
+        currency=pending.currency,
+    )
+    if funding.status != "paid":
+        intent = parse_buyer_intent(
+            pending.buyer_text,
+            use_mock=use_mock_intent_parser(intent_mode),
+        )
+        return ProcurementRun(
+            order_id=pending.order_id,
+            intent=intent,
+            quotes=(),
+            split=SplitResult(
+                item=intent.item,
+                requested_qty=intent.qty,
+                allocated_qty=0,
+                total_cost=pending.amount,
+                allocations=(),
+                shortfall=0,
+                over_budget=False,
+                budget=intent.budget,
+            ),
+            buyer_funding=funding,
+            settlements=(),
+            transcript=("Stripe Checkout is not paid yet.",),
+            payment_mode=get_payment_mode(payment_mode),
+            buyer_payment_mode=STRIPE_BUYER_PAYMENT_MODE,
+        )
+
+    delete_pending_order(pending.order_id)
+    return await run_procurement_via_agents(
+        ctx=ctx,
+        registry_address=registry_address,
+        buyer_text=pending.buyer_text,
+        payment_mode=payment_mode,
+        intent_mode=intent_mode,
+        wallet=wallet,
+        timeout=timeout,
+        buyer_funding_override=funding,
+    )
+
+
+def _is_checkout_pending(funding: BuyerFundingResult) -> bool:
+    return (
+        funding.provider == "stripe"
+        and not funding.simulated
+        and funding.amount > 0
+        and funding.status != "paid"
     )

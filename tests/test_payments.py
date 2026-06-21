@@ -15,6 +15,7 @@ from agents.payments import (
     get_buyer_payment_mode,
     get_payment_mode,
     micro_fet_to_fet,
+    retrieve_stripe_checkout_session,
     send_fet_with_retries,
     settle_farm_payment,
     wallet_address,
@@ -139,6 +140,38 @@ def test_stripe_checkout_session_creation(monkeypatch: pytest.MonkeyPatch) -> No
     assert result.checkout_url == "https://checkout.stripe.test/session"
     assert created["client_reference_id"] == "order-1"
     assert created["mode"] == "payment"
+
+
+def test_retrieve_paid_stripe_checkout_session_without_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeSession:
+        id = "cs_test_paid_123"
+        url = None
+        payment_status = "paid"
+
+    class FakeCheckoutSession:
+        @staticmethod
+        def retrieve(session_id: str) -> FakeSession:
+            assert session_id == "cs_test_paid_123"
+            return FakeSession()
+
+    fake_stripe = types.SimpleNamespace(
+        api_key=None,
+        checkout=types.SimpleNamespace(Session=FakeCheckoutSession),
+    )
+    monkeypatch.setitem(sys.modules, "stripe", fake_stripe)
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_demo")
+
+    result = retrieve_stripe_checkout_session(
+        session_id="cs_test_paid_123",
+        order_id="order-paid",
+        amount=206.0,
+    )
+
+    assert result.provider == "stripe"
+    assert result.status == "paid"
+    assert result.reference == "cs_test_paid_123"
+    assert result.checkout_url is None
+    assert result.receipt_ref == "cs_test_paid_123"
 
 
 def test_real_payment_result_has_explorer_url(monkeypatch: pytest.MonkeyPatch) -> None:

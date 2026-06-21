@@ -11,6 +11,13 @@ from uuid import uuid4
 from agents.farm_state import FarmState
 from agents.llm import BuyerIntent, parse_buyer_intent, use_mock_intent_parser
 from agents.optimizer import Allocation, Quote, SplitResult, optimize_split
+from agents.order_store import (
+    PendingOrder,
+    delete_pending_order,
+    latest_pending_order,
+    load_pending_order,
+    save_pending_order,
+)
 from agents.payments import (
     BuyerFundingResult,
     PaymentResult,
@@ -21,6 +28,7 @@ from agents.payments import (
     get_buyer_payment_mode,
     get_payment_mode,
     no_buyer_funding,
+    retrieve_stripe_checkout_session,
     settle_farm_payment,
 )
 
@@ -50,6 +58,8 @@ class ProcurementRun:
             return "partial"
         if self.split.over_budget:
             return "over_budget"
+        if _is_checkout_pending(self.buyer_funding):
+            return "payment_pending"
         return "confirmed"
 
 
@@ -89,8 +99,9 @@ async def run_procurement(
     intent_mode: str | None = None,
     ledger: Any | None = None,
     wallet: Any | None = None,
+    buyer_funding_override: BuyerFundingResult | None = None,
 ) -> ProcurementRun:
-    order_id = f"order-{uuid4().hex[:8]}"
+    order_id = buyer_funding_override.order_id if buyer_funding_override else f"order-{uuid4().hex[:8]}"
     mode = get_payment_mode(payment_mode)
     buyer_mode = get_buyer_payment_mode()
     farms = farms or load_farms()
@@ -144,7 +155,7 @@ async def run_procurement(
             buyer_payment_mode=buyer_mode,
         )
 
-    buyer_funding = fund_order_from_buyer(
+    buyer_funding = buyer_funding_override or fund_order_from_buyer(
         order_id=order_id,
         item=intent.item,
         qty=intent.qty,
@@ -155,6 +166,29 @@ async def run_procurement(
         f"Buyer funding: {buyer_funding.provider} {buyer_funding.status} "
         f"({buyer_funding.receipt_ref})."
     )
+
+    if _is_checkout_pending(buyer_funding):
+        save_pending_order(
+            PendingOrder(
+                order_id=order_id,
+                buyer_text=buyer_text,
+                checkout_session_id=buyer_funding.reference,
+                amount=buyer_funding.amount,
+                currency=buyer_funding.currency,
+            )
+        )
+        transcript.append("Checkout is pending. Farm payouts will run after Stripe confirms payment.")
+        return ProcurementRun(
+            order_id=order_id,
+            intent=intent,
+            quotes=quotes,
+            split=split,
+            buyer_funding=buyer_funding,
+            settlements=(),
+            transcript=tuple(transcript),
+            payment_mode=mode,
+            buyer_payment_mode=buyer_mode,
+        )
 
     settlements: list[FarmSettlement] = []
     farms_by_name = {farm.name: farm for farm in farms}
@@ -204,8 +238,67 @@ async def run_procurement(
     )
 
 
+async def confirm_pending_order(
+    order_id: str | None = None,
+    *,
+    farms: list[FarmState] | None = None,
+    payment_mode: str | None = None,
+    intent_mode: str | None = None,
+    ledger: Any | None = None,
+    wallet: Any | None = None,
+) -> ProcurementRun | None:
+    pending = load_pending_order(order_id) if order_id else latest_pending_order()
+    if pending is None:
+        return None
+
+    funding = retrieve_stripe_checkout_session(
+        session_id=pending.checkout_session_id,
+        order_id=pending.order_id,
+        amount=pending.amount,
+        currency=pending.currency,
+    )
+    if funding.status != "paid":
+        intent = parse_buyer_intent(pending.buyer_text, use_mock=use_mock_intent_parser(intent_mode))
+        return ProcurementRun(
+            order_id=pending.order_id,
+            intent=intent,
+            quotes=(),
+            split=SplitResult(
+                item=intent.item,
+                requested_qty=intent.qty,
+                allocated_qty=0,
+                total_cost=pending.amount,
+                allocations=(),
+                shortfall=0,
+                over_budget=False,
+                budget=intent.budget,
+            ),
+            buyer_funding=funding,
+            settlements=(),
+            transcript=("Stripe Checkout is not paid yet.",),
+            payment_mode=get_payment_mode(payment_mode),
+            buyer_payment_mode=STRIPE_BUYER_PAYMENT_MODE,
+        )
+
+    delete_pending_order(pending.order_id)
+    return await run_procurement(
+        pending.buyer_text,
+        farms=farms,
+        payment_mode=payment_mode,
+        intent_mode=intent_mode,
+        ledger=ledger,
+        wallet=wallet,
+        buyer_funding_override=funding,
+    )
+
+
 def format_procurement_response(run: ProcurementRun) -> str:
     currency = _display_currency(run)
+    if _is_paid_stripe_confirmation(run):
+        return _format_paid_stripe_confirmation(run, currency)
+    if _is_unpaid_stripe_confirmation(run):
+        return _format_unpaid_stripe_confirmation(run, currency)
+
     quote_lines = [
         f"- {quote.seller}: {quote.qty_available} @ {_format_money(quote.unit_price, currency)}"
         for quote in run.quotes
@@ -237,7 +330,18 @@ def format_procurement_response(run: ProcurementRun) -> str:
         f"- Buyer payment: {buyer_label}",
         f"- Buyer funding: {_format_buyer_funding(run)}",
         f"- Farm payout mode: {payment_label}",
+        *_format_stripe_step_lines(run, currency),
+        *_format_agent_trace_lines(run),
+        *_format_fulfillment_lines(run),
     ]
+
+    if run.status == "payment_pending":
+        lines.extend(
+            [
+                "",
+                f"Next step: open Stripe Checkout, complete the test payment, then return here and send `confirm order {run.order_id}`.",
+            ]
+        )
 
     if run.split.shortfall:
         lines.append(f"- Shortfall: {run.split.shortfall} {run.intent.item}")
@@ -247,10 +351,156 @@ def format_procurement_response(run: ProcurementRun) -> str:
     return "\n".join(lines)
 
 
+def _is_paid_stripe_confirmation(run: ProcurementRun) -> bool:
+    return (
+        run.status == "confirmed"
+        and run.buyer_funding.provider == "stripe"
+        and run.buyer_funding.status == "paid"
+        and not run.buyer_funding.simulated
+        and bool(run.settlements)
+    )
+
+
+def _is_unpaid_stripe_confirmation(run: ProcurementRun) -> bool:
+    return (
+        run.status == "payment_pending"
+        and run.buyer_funding.provider == "stripe"
+        and not run.buyer_funding.simulated
+        and not run.quotes
+        and not run.settlements
+    )
+
+
+def _format_paid_stripe_confirmation(run: ProcurementRun, currency: str) -> str:
+    settlements_by_seller = {
+        settlement.allocation.seller: settlement for settlement in run.settlements
+    }
+    allocation_lines = [
+        f"- {_format_allocation_line(allocation, settlements_by_seller.get(allocation.seller), currency)}"
+        for allocation in run.split.allocations
+    ]
+    payment_label = _format_farm_payout_mode(run)
+
+    lines = [
+        f"Payment confirmed for order {run.order_id}.",
+        "",
+        "Final receipt:",
+        f"- Item: {run.intent.qty} {run.intent.item}",
+        *allocation_lines,
+        f"- Total: {_format_money(run.split.total_cost, currency)}",
+        f"- Buyer payment: {_format_buyer_funding(run)}",
+        f"- Farm payouts: {payment_label}",
+        *_format_stripe_step_lines(run, currency),
+        *_format_agent_trace_lines(run),
+        *_format_fulfillment_lines(run),
+    ]
+    return "\n".join(lines)
+
+
+def _format_unpaid_stripe_confirmation(run: ProcurementRun, currency: str) -> str:
+    lines = [
+        f"Stripe Checkout is not marked paid yet for order {run.order_id}.",
+        "",
+        "Payment status:",
+        f"- Checkout: {run.buyer_funding.status}",
+        f"- Amount: {_format_money(run.buyer_funding.amount, currency)}",
+        f"- Buyer funding: {_format_buyer_funding(run)}",
+        "",
+        "Next step: complete the Stripe test payment, then send "
+        f"`confirm order {run.order_id}` again.",
+    ]
+    return "\n".join(lines)
+
+
 def _format_buyer_funding(run: ProcurementRun) -> str:
     if run.buyer_funding.amount == 0:
         return "not requested"
-    return run.buyer_funding.receipt_ref
+    if (
+        run.buyer_funding.provider == "stripe"
+        and run.buyer_funding.status == "paid"
+        and not run.buyer_funding.simulated
+    ):
+        return f"Stripe Checkout paid ({_short_reference(run.buyer_funding.reference)})"
+    if run.buyer_funding.checkout_url:
+        return f"[Open Stripe Checkout]({run.buyer_funding.checkout_url})"
+    return _short_reference(run.buyer_funding.receipt_ref)
+
+
+def _format_stripe_step_lines(run: ProcurementRun, currency: str) -> list[str]:
+    if not _uses_stripe_flow(run) or run.buyer_funding.amount == 0:
+        return []
+
+    if run.buyer_funding.status == "paid" and not run.buyer_funding.simulated:
+        checkout_status = "confirmed"
+    elif run.buyer_funding.simulated:
+        checkout_status = "simulated"
+    else:
+        checkout_status = "created"
+    lines = [
+        "",
+        "Stripe steps:",
+        (
+            f"- Checkout Session {checkout_status}: {_format_buyer_funding(run)} "
+            f"for {_format_money(run.buyer_funding.amount, currency)}"
+        ),
+    ]
+
+    if run.status == "payment_pending":
+        lines.append("- Farm payouts: waiting for Stripe payment confirmation")
+        return lines
+
+    for settlement in run.settlements:
+        transfer_status = "simulated" if settlement.payment.simulated else "created"
+        lines.append(
+            f"- Connect transfer {transfer_status}: {_short_reference(settlement.payment.receipt_ref)} "
+            f"to {settlement.allocation.seller} Stripe account "
+            f"for {_format_money(settlement.payment.amount_fet, currency)}"
+        )
+    return lines
+
+
+def _format_fulfillment_lines(run: ProcurementRun) -> list[str]:
+    if run.status != "confirmed" or not run.settlements:
+        return []
+    return [
+        "",
+        (
+            f"Order confirmed. Your {run.intent.qty} {run.intent.item} order has been placed "
+            "and the selected farms will prepare it for shipment shortly."
+        ),
+    ]
+
+
+def _format_agent_trace_lines(run: ProcurementRun) -> list[str]:
+    trace = [
+        line
+        for line in run.transcript
+        if (
+            line.startswith("Registry returned")
+            or line.startswith("Sent QuoteRequest")
+            or line.startswith("Sent PurchaseOrder")
+            or "through live agent messages" in line
+        )
+    ]
+    if not trace:
+        return []
+    return ["", "Agent trace:", *[f"- {line}" for line in trace]]
+
+
+def _uses_stripe_flow(run: ProcurementRun) -> bool:
+    return (
+        run.buyer_payment_mode == STRIPE_BUYER_PAYMENT_MODE
+        or run.payment_mode == STRIPE_CONNECT_FARM_PAYMENT_MODE
+    )
+
+
+def _is_checkout_pending(funding: BuyerFundingResult) -> bool:
+    return (
+        funding.provider == "stripe"
+        and not funding.simulated
+        and funding.amount > 0
+        and funding.status != "paid"
+    )
 
 
 def _display_currency(run: ProcurementRun) -> str:
@@ -297,8 +547,16 @@ def _format_allocation_line(
     if settlement is None:
         payment_note = "not paid"
     else:
-        payment_note = settlement.payment.receipt_ref
+        payment_note = _short_reference(settlement.payment.receipt_ref)
     return (
         f"{allocation.seller}: {allocation.qty} {allocation.item} = "
         f"{_format_money(total, currency)} ({payment_note})"
     )
+
+
+def _short_reference(value: str, *, prefix: int = 14, suffix: int = 6) -> str:
+    if value.startswith("http://") or value.startswith("https://"):
+        return "link"
+    if len(value) <= prefix + suffix + 1:
+        return value
+    return f"{value[:prefix]}...{value[-suffix:]}"

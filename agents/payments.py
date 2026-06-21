@@ -191,6 +191,7 @@ def create_stripe_checkout_session(
         import stripe
 
         stripe.api_key = secret_key
+        _configure_stripe_timeout(stripe)
         success_url = os.getenv("STRIPE_SUCCESS_URL", "https://example.com/agribroker/success")
         cancel_url = os.getenv("STRIPE_CANCEL_URL", "https://example.com/agribroker/cancel")
         session = stripe.checkout.Session.create(
@@ -257,6 +258,49 @@ def fund_order_from_buyer(
     )
 
 
+def retrieve_stripe_checkout_session(
+    *,
+    session_id: str,
+    order_id: str,
+    amount: float,
+    currency: str = "usd",
+) -> BuyerFundingResult:
+    secret_key = os.getenv("STRIPE_SECRET_KEY", "").strip()
+    if not secret_key:
+        return simulated_stripe_buyer_funding(
+            order_id,
+            amount,
+            currency=currency,
+            reason="STRIPE_SECRET_KEY missing; cannot verify Checkout session",
+        )
+
+    try:
+        import stripe
+
+        stripe.api_key = secret_key
+        _configure_stripe_timeout(stripe)
+        session = stripe.checkout.Session.retrieve(session_id)
+        raw_checkout_url = getattr(session, "url", None)
+        checkout_url = raw_checkout_url if isinstance(raw_checkout_url, str) and raw_checkout_url else None
+        return BuyerFundingResult(
+            order_id=order_id,
+            amount=amount,
+            currency=currency,
+            status=str(getattr(session, "payment_status", "unknown")),
+            provider="stripe",
+            reference=str(getattr(session, "id", session_id)),
+            checkout_url=checkout_url,
+            simulated=False,
+        )
+    except Exception as exc:
+        return simulated_stripe_buyer_funding(
+            order_id,
+            amount,
+            currency=currency,
+            reason=f"Stripe Checkout verification failed: {exc}",
+        )
+
+
 def create_stripe_connect_transfer(
     order_id: str,
     recipient_account_id: str,
@@ -308,6 +352,7 @@ def create_stripe_connect_transfer(
         import stripe
 
         stripe.api_key = secret_key
+        _configure_stripe_timeout(stripe)
         transfer = stripe.Transfer.create(
             amount=dollars_to_cents(amount),
             currency=currency,
@@ -346,6 +391,22 @@ def simulated_stripe_transfer(
         simulated=True,
         reason=reason,
     )
+
+
+def _stripe_api_timeout_seconds() -> float:
+    value = os.getenv("STRIPE_API_TIMEOUT_SECONDS", "8")
+    try:
+        timeout = float(value)
+    except ValueError:
+        timeout = 8.0
+    return max(1.0, timeout)
+
+
+def _configure_stripe_timeout(stripe_module: Any) -> None:
+    requests_client = getattr(stripe_module, "RequestsClient", None)
+    if requests_client is None:
+        return
+    stripe_module.default_http_client = requests_client(timeout=_stripe_api_timeout_seconds())
 
 
 async def send_fet_with_retries(

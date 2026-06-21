@@ -56,6 +56,11 @@ def create_farmer_agent(state: FarmState, registry_address: str | None = None):
     async def quote(ctx: Context, sender: str, msg: QuoteRequest) -> None:
         try:
             response = state.quote(msg.item, msg.qty)
+            ctx.logger.info(
+                f"{state.name} received quote request from {sender}: "
+                f"{msg.qty} {msg.item}; offering {response.qty_available} "
+                f"at {response.unit_price:.2f}"
+            )
             await ctx.send(
                 sender,
                 QuoteResponse(
@@ -73,6 +78,10 @@ def create_farmer_agent(state: FarmState, registry_address: str | None = None):
     async def invoice(ctx: Context, sender: str, msg: PurchaseOrder) -> None:
         total = state.invoice_total(msg.item, msg.qty, msg.agreed_unit_price)
         pending_orders[msg.order_id] = msg
+        ctx.logger.info(
+            f"{state.name} received purchase order {msg.order_id} from {sender}: "
+            f"{msg.qty} {msg.item} at {msg.agreed_unit_price:.2f}; invoice {total:.2f}"
+        )
         await ctx.send(
             sender,
             Invoice(
@@ -91,6 +100,10 @@ def create_farmer_agent(state: FarmState, registry_address: str | None = None):
             return
 
         state.fulfill(order.item, order.qty)
+        ctx.logger.info(
+            f"{state.name} confirmed payment for {msg.order_id}; "
+            f"reserved {order.qty} {order.item}"
+        )
         await ctx.send(
             sender,
             Receipt(

@@ -26,7 +26,10 @@ def readme_path(filename: str) -> str | None:
 
 def registry_profile_kwargs() -> dict[str, Any]:
     return {
-        "description": "Seller discovery registry for the AgriBroker produce marketplace.",
+        "description": (
+            "AgriBroker discovery registry — the marketplace phone book. Farm agents "
+            "register their catalogs here, and the orchestrator asks it who sells a given item."
+        ),
         "handle": "agribroker-registry",
         "readme_path": readme_path("registry.md"),
         "metadata": {
@@ -41,7 +44,10 @@ def registry_profile_kwargs() -> dict[str, Any]:
 
 def orchestrator_profile_kwargs() -> dict[str, Any]:
     return {
-        "description": "Structured AgriBroker coordinator for procurement requests, quotes, optimization, and receipts.",
+        "description": (
+            "AgriBroker coordinator — turns one buyer request into a live procurement run: "
+            "discovers farms, gathers quotes, optimizes the cheapest split, settles payment, and returns one receipt."
+        ),
         "handle": "agribroker-orchestrator",
         "readme_path": readme_path("orchestrator.md"),
         "metadata": {
@@ -57,8 +63,14 @@ def orchestrator_profile_kwargs() -> dict[str, Any]:
 def farmer_profile_kwargs(state: FarmState) -> dict[str, Any]:
     filename = f"{slugify(state.name)}.md"
     items = sorted(state.catalog.keys())
+    item_list = ", ".join(items) or "produce"
+    personality = state.personality.strip()
+    suffix = "" if personality.endswith((".", "!", "?")) else "."
     return {
-        "description": f"{state.name} seller agent for AgriBroker produce quotes and order receipts.",
+        "description": (
+            f"{state.name} — {personality}{suffix} Sells {item_list} on AgriBroker "
+            "with live quotes, invoices, and order receipts."
+        ),
         "handle": f"agribroker-{slugify(state.name)}",
         "readme_path": readme_path(filename) or readme_path("farmer-template.md"),
         "metadata": {

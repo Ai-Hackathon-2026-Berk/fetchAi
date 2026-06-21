@@ -1,4 +1,4 @@
-# Devpost Summary Draft
+# AgriBroker — Devpost Summary
 
 ## One-Liner
 
@@ -29,7 +29,7 @@ The orchestrator agent discovers seller agents, collects tomato quotes, computes
 
 ## Why Multi-Agent Matters
 
-The demo is not one API call. Farm A is cheapest but has limited stock. Farm B has enough to complete the order but costs more. AgriBroker must coordinate across sellers to produce the cheapest feasible split.
+The demo is not one API call. Farm A is cheapest but has only 200 in stock. Across the other sellers, self-onboarded Green Valley undercuts the rest, so AgriBroker coordinates across sellers to produce the cheapest feasible split rather than buying everything from one farm.
 
 Expected demo result:
 

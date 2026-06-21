@@ -213,6 +213,14 @@ python scripts/check_testnet_payment_ready.py
 python scripts/check_stripe_ready.py
 ```
 
+When using a real Stripe test key, run the local Checkout return page server before clicking Checkout links:
+
+```bash
+python scripts/serve_checkout_pages.py
+```
+
+Stripe redirects successful test payments to `http://127.0.0.1:8787/checkout/success`, which displays an AgriBroker order confirmation page. Use Stripe test card `4242 4242 4242 4242` with any future date and CVC.
+
 Fund the printed orchestrator wallet before switching to:
 
 ```env

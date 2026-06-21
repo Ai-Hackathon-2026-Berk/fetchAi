@@ -1,7 +1,9 @@
 import asyncio
 
-from agents.agent_network import run_procurement_via_agents
+from agents.agent_network import confirm_pending_order_via_agents, run_procurement_via_agents
+from agents.payments import BuyerFundingResult
 from agents.protocols import Invoice, PaymentSent, QuoteRequest, QuoteResponse, Receipt, SellerList, WhoSells
+from agents.workflow import format_procurement_response
 
 
 class FakeContext:
@@ -90,6 +92,12 @@ def test_agent_network_procurement_happy_path() -> None:
         ("Farm A", 200),
         ("Farm B", 300),
     ]
+    response = format_procurement_response(run)
+    assert "Agent trace:" in response
+    assert "Registry returned 2 seller addresses." in response
+    assert "Sent QuoteRequest to farm agent agent-farm-a." in response
+    assert "Sent PurchaseOrder to Farm A agent at agent-farm-a." in response
+    assert "through live agent messages" in response
     assert isinstance(ctx.sent[0][1], WhoSells)
     assert any(isinstance(message, PaymentSent) for _destination, message in ctx.sent)
 
@@ -113,3 +121,94 @@ def test_agent_network_stripe_connect_uses_invoice_connected_accounts(monkeypatc
         "acct_demo_farm_a",
         "acct_demo_farm_b",
     ]
+
+
+def test_agent_network_real_checkout_defers_purchase_orders(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("AGRIBROKER_BUYER_PAYMENT_MODE", "stripe")
+    funding = BuyerFundingResult(
+        order_id="order-agent",
+        amount=215.0,
+        currency="usd",
+        status="unpaid",
+        provider="stripe",
+        reference="cs_test_agent",
+        checkout_url="https://checkout.stripe.test/session",
+        simulated=False,
+    )
+    ctx = FakeContext()
+
+    run = asyncio.run(
+        run_procurement_via_agents(
+            ctx=ctx,
+            registry_address="agent-registry",
+            buyer_text="I need 500 tomatoes under 250 FET.",
+            payment_mode="stripe_connect",
+            intent_mode="local",
+            wallet=object(),
+            buyer_funding_override=funding,
+        )
+    )
+
+    assert run.status == "payment_pending"
+    assert run.settlements == ()
+    assert any(isinstance(message, WhoSells) for _destination, message in ctx.sent)
+    assert any(isinstance(message, QuoteRequest) for _destination, message in ctx.sent)
+    assert not any(message.__class__.__name__ == "PurchaseOrder" for _destination, message in ctx.sent)
+
+
+def test_agent_network_confirm_paid_checkout_sends_purchase_orders(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("AGRIBROKER_BUYER_PAYMENT_MODE", "stripe")
+    unpaid_funding = BuyerFundingResult(
+        order_id="order-agent",
+        amount=215.0,
+        currency="usd",
+        status="unpaid",
+        provider="stripe",
+        reference="cs_test_agent",
+        checkout_url="https://checkout.stripe.test/session",
+        simulated=False,
+    )
+    ctx = FakeContext()
+    asyncio.run(
+        run_procurement_via_agents(
+            ctx=ctx,
+            registry_address="agent-registry",
+            buyer_text="I need 500 tomatoes under 250 FET.",
+            payment_mode="stripe_connect",
+            intent_mode="local",
+            wallet=object(),
+            buyer_funding_override=unpaid_funding,
+        )
+    )
+
+    def fake_retrieve_checkout(**_kwargs: object) -> BuyerFundingResult:
+        return BuyerFundingResult(
+            order_id="order-agent",
+            amount=215.0,
+            currency="usd",
+            status="paid",
+            provider="stripe",
+            reference="cs_test_agent",
+            checkout_url=None,
+            simulated=False,
+        )
+
+    monkeypatch.setattr("agents.agent_network.retrieve_stripe_checkout_session", fake_retrieve_checkout)
+    ctx.sent.clear()
+    run = asyncio.run(
+        confirm_pending_order_via_agents(
+            ctx=ctx,
+            registry_address="agent-registry",
+            order_id="order-agent",
+            payment_mode="stripe_connect",
+            intent_mode="local",
+            wallet=object(),
+        )
+    )
+
+    assert run is not None
+    assert run.status == "confirmed"
+    assert any(message.__class__.__name__ == "PurchaseOrder" for _destination, message in ctx.sent)
+    assert any(isinstance(message, PaymentSent) for _destination, message in ctx.sent)
