@@ -1,0 +1,59 @@
+{
+  "demo_item": "tomatoes",
+  "buyer_prompt": "I need 500 tomatoes under 250 FET.",
+  "farms": [
+    {
+      "name": "Farm A",
+      "seed": "agri-farm-a-demo-seed-change-before-deploy",
+      "port": 8101,
+      "personality": "efficient low-cost farm with limited harvest available",
+      "catalog": {
+        "tomatoes": {
+          "stock": 200,
+          "base_unit_price": 0.4,
+          "price_floor": 0.36
+        }
+      }
+    },
+    {
+      "name": "Farm B",
+      "seed": "agri-farm-b-demo-seed-change-before-deploy",
+      "port": 8102,
+      "personality": "reliable mid-size supplier with enough stock for most orders",
+      "catalog": {
+        "tomatoes": {
+          "stock": 400,
+          "base_unit_price": 0.45,
+          "price_floor": 0.41
+        }
+      }
+    },
+    {
+      "name": "Farm C",
+      "seed": "agri-farm-c-demo-seed-change-before-deploy",
+      "port": 8103,
+      "personality": "premium backup supplier with smaller volume",
+      "catalog": {
+        "tomatoes": {
+          "stock": 100,
+          "base_unit_price": 0.5,
+          "price_floor": 0.47
+        }
+      }
+    },
+    {
+      "name": "Sunny Acres",
+      "seed": "agri-sunny-acres-demo-seed-change-before-deploy",
+      "port": 8104,
+      "personality": "verified brand storefront represented by Flockx when available",
+      "catalog": {
+        "tomatoes": {
+          "stock": 300,
+          "base_unit_price": 0.48,
+          "price_floor": 0.44
+        }
+      }
+    }
+  ]
+}
+

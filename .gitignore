@@ -1,0 +1,29 @@
+# Project planning / private notes (do NOT commit)
+CLAUDE.md
+BUILD_PLAN.md
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+
+# Secrets & local config
+.env
+.env.local
+*.key
+seeds.txt
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Logs
+*.log
+
+# Test/cache output
+.pytest_cache/
